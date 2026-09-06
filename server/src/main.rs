@@ -4,6 +4,7 @@
 mod counter;
 mod manifest;
 mod state;
+mod terminal;
 
 use axum::{
     extract::{Request, State},
@@ -47,6 +48,9 @@ fn router(state: AppState) -> Router {
 
     Router::new()
         .merge(authed)
+        // ws 在浏览器里带不了 header，token 走查询参数，所以它在 authed 之外，
+        // 由 terminal.rs 自己校验——但仍在同一个 Router 上。
+        .route("/ws/term", get(terminal::ws_term))
         // /api、/ws 下没匹配到的路径给 JSON 404，而不是落进 SPA 兜底返回 HTML——
         // curl 是一等公民（不变量 8），它拿到的响应得是接口形状。
         .route("/api/{*path}", any(api_not_found))

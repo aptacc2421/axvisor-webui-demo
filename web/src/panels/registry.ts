@@ -9,9 +9,11 @@ import { FallbackPanel } from './FallbackPanel'
 
 // 懒加载：注册表里有 kind，不等于用户点了它——用到了才下载那一块代码
 const CounterPanel = lazy(() => import('./counter/CounterPanel'))
+const TerminalPanel = lazy(() => import('./terminal/TerminalPanel'))
 
 const renderers: Record<string, PanelComponent> = {
   counter: CounterPanel, // ← 插入一个面板，这里就加这一行
+  terminal: TerminalPanel,
 }
 
 export function resolvePanel(kind: string): PanelComponent {
