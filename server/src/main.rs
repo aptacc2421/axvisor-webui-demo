@@ -2,6 +2,7 @@
 //! 一个 serve（不变量 1）。curl 与浏览器走的是同一棵路由树（不变量 8）。
 
 mod counter;
+mod events;
 mod manifest;
 mod state;
 mod terminal;
@@ -58,6 +59,8 @@ fn router(state: AppState) -> Router {
         // 由 terminal.rs 自己校验——但仍在同一个 Router 上。
         .route("/ws/term", get(terminal::ws_term))
         .route("/ws/vms/{id}/console", get(terminal::ws_vm_console))
+        // 壳级资源事件流：token 走查询参数，自带鉴权
+        .route("/ws/events", get(events::ws_events))
         // /api、/ws 下没匹配到的路径给 JSON 404，而不是落进 SPA 兜底返回 HTML——
         // curl 是一等公民（不变量 8），它拿到的响应得是接口形状。
         .route("/api/{*path}", any(api_not_found))

@@ -1,15 +1,18 @@
 //! vm 组合面板 —— 对应真实 webui 的 VM 详情页：资源列表 + 生命周期 + 每 VM console。
 //!
+//! 数据是事件驱动的：VM 列表来自壳级资源事件流（props 注入，wake/yield 推送，
+//! 本面板零轮询）；创建/停止走 POST /api/vms 系列接口，列表变化由事件流自动
+//! 反映——「+1 台就多一个 console」不需要任何手动刷新。
+//!
 //! 耦合纪律（积木式组合，不焊接）：
-//! - VM 数量来自 GET /api/vms（资源层），不是去读 counter 面板的值；
-//! - 创建/停止走 POST /api/vms 系列接口，stop 复用「async 接受 + 轮询到终态」
-//!   的语义（2s 后停产）；
-//! - console 子页签在本面板内部管理，壳毫不知情；每个 console 用
-//!   TerminalPanel 连自己的 /ws/vms/{id}/console——组件复用走 props，
-//!   不摸对方内部。
+//! - console 子页签/同屏布局在本面板内部管理，壳毫不知情；
+//! - 每 VM console 复用 TerminalPanel（props 传入 consolePath），不摸对方内部；
+//! - console 在面板挂载时即全部连接：字符后台默认流向浏览器（不论看没看，
+//!   防止内容在缓冲区积压）。
 //! - 停止是「停产不停服」：页签不消失，console 连接保持，只是不再有输出。
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { VM_STATE_TEXT } from '@/api/events'
 import { describeError, type PanelProps } from '@/api/types'
 import TerminalPanel from '../terminal/TerminalPanel'
 import { Badge } from '@/components/ui/badge'
@@ -31,104 +34,85 @@ import {
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
-type VmState = 'running' | 'stopping' | 'stopped'
+const STOP_DELAY_HINT = '2s 后停产'
 
-interface VmInfo {
-  id: number
-  state: VmState
-}
-
-const STATE_TEXT: Record<VmState, string> = {
-  running: '运行中',
-  stopping: '停止中…',
-  stopped: '已停止',
-}
-
-export default function VmPanel({ api, token, meta }: PanelProps) {
-  const [vms, setVms] = useState<VmInfo[]>([])
+export default function VmPanel({
+  api,
+  token,
+  meta,
+  resources = [],
+  focusVm = null,
+}: PanelProps) {
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [activeId, setActiveId] = useState<number | null>(null)
   const [confirmingStop, setConfirmingStop] = useState<number | null>(null)
-  const pollAbortRef = useRef<AbortController | null>(null)
+  const [layout, setLayout] = useState<'tabs' | 'grid'>('tabs')
 
-  // 资源列表轮询：1s 一次（顺带捕捉 stopping → stopped 的终态推进）
+  // 壳请求聚焦某台 VM（左栏资源区点击）→ 激活它的 console
   useEffect(() => {
-    let timer: number | undefined
-    const tick = async () => {
-      pollAbortRef.current?.abort()
-      const ac = new AbortController()
-      pollAbortRef.current = ac
-      try {
-        const res = await api.get<{ vms: VmInfo[] }>('/api/vms', ac.signal)
-        setVms(res.vms)
-        setError(null)
-        // 初次加载聚焦最新一台；之后不再抢用户的焦点
-        setActiveId((cur) => cur ?? res.vms.at(-1)?.id ?? null)
-      } catch (e) {
-        if (!ac.signal.aborted) setError(describeError(e))
-      }
-    }
-    void tick()
-    timer = window.setInterval(() => void tick(), 1000)
-    return () => {
-      window.clearInterval(timer)
-      pollAbortRef.current?.abort()
-    }
-  }, [api])
+    if (focusVm !== null) setActiveId(focusVm)
+  }, [focusVm])
 
-  const create = useCallback(async () => {
+  const create = async () => {
     setCreating(true)
     setError(null)
     try {
-      // 同步创建（轻量操作）：+1 台，立即聚焦它的新 console 页签
+      // 同步创建（轻量操作）：列表变化由资源事件流自动推送
       const res = await api.post<{ ok: boolean; id: number }>('/api/vms', {
         action: 'create',
       })
       setActiveId(res.id)
-      const fresh = await api.get<{ vms: VmInfo[] }>('/api/vms')
-      setVms(fresh.vms)
     } catch (e) {
       setError(describeError(e))
     } finally {
       setCreating(false)
     }
-  }, [api])
+  }
 
-  const stop = useCallback(
-    async (id: number) => {
-      setConfirmingStop(null)
-      setError(null)
-      try {
-        // async 接受：状态由轮询推进（stopping → stopped）；
-        // 立刻刷一次让「停止中…」马上可见，不等下一个 1s 轮询
-        await api.post<{ ok: boolean; async: boolean; status: string }>(
-          `/api/vms/${id}/stop`,
-          { action: 'stop' },
-        )
-        const fresh = await api.get<{ vms: VmInfo[] }>('/api/vms')
-        setVms(fresh.vms)
-      } catch (e) {
-        setError(describeError(e))
-      }
-    },
-    [api],
-  )
+  const stop = async (id: number) => {
+    setConfirmingStop(null)
+    setError(null)
+    try {
+      // async 接受：stopping → stopped 的状态推进由事件流自动到达
+      await api.post<{ ok: boolean; async: boolean; status: string }>(
+        `/api/vms/${id}/stop`,
+        { action: 'stop' },
+      )
+    } catch (e) {
+      setError(describeError(e))
+    }
+  }
 
-  const active = vms.find((v) => v.id === activeId) ?? null
+  const active = resources.find((v) => v.id === activeId) ?? null
 
   return (
     <Card className="flex h-full flex-col">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           虚拟机
-          {/* 计数 = 现有 VM 数量：来自资源列表，不是兄弟面板的值 */}
-          <Badge variant="secondary">{vms.length} 台</Badge>
+          {/* 计数 = 现有 VM 数量：来自资源事件流，不是兄弟面板的值 */}
+          <Badge variant="secondary">{resources.length} 台</Badge>
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              size="sm"
+              variant={layout === 'grid' ? 'secondary' : 'ghost'}
+              onClick={() => setLayout('grid')}
+            >
+              同屏
+            </Button>
+            <Button
+              size="sm"
+              variant={layout === 'tabs' ? 'secondary' : 'ghost'}
+              onClick={() => setLayout('tabs')}
+            >
+              分页
+            </Button>
+          </div>
         </CardTitle>
         <CardDescription>
-          +1 台就多一个 console 页签；停止后页签不消失，但不再有输出。
-          资源证据：<code>server/data/vms.json</code>、
-          <code>vms.log</code>、<code>console.log</code>（vm&#123;id&#125; 行）。
+          console 在面板挂载时即全部连接——后台默认流向浏览器，不看也在排水。
+          停止后页签不消失，{STOP_DELAY_HINT}，只是安静下来。
         </CardDescription>
       </CardHeader>
 
@@ -142,16 +126,16 @@ export default function VmPanel({ api, token, meta }: PanelProps) {
           )}
         </div>
 
-        {/* console 子页签：面板内部管理，壳对此一无所知 */}
+        {/* 子页签 */}
         <div className="flex flex-wrap items-center gap-1 border-b pb-2">
-          {vms.map((v) => (
+          {resources.map((v) => (
             <button
               key={v.id}
               type="button"
               onClick={() => setActiveId(v.id)}
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-sm',
-                v.id === activeId
+                v.id === activeId && layout === 'tabs'
                   ? 'bg-secondary'
                   : 'text-muted-foreground hover:bg-accent',
               )}
@@ -161,11 +145,11 @@ export default function VmPanel({ api, token, meta }: PanelProps) {
                 variant={v.state === 'running' ? 'default' : 'outline'}
                 className="text-[10px]"
               >
-                {STATE_TEXT[v.state]}
+                {VM_STATE_TEXT[v.state]}
               </Badge>
             </button>
           ))}
-          {vms.length === 0 && (
+          {resources.length === 0 && (
             <span className="text-xs text-muted-foreground">
               还没有 VM——点「创建 VM」
             </span>
@@ -185,17 +169,28 @@ export default function VmPanel({ api, token, meta }: PanelProps) {
           )}
           {active?.state === 'stopping' && (
             <span className="text-sm text-muted-foreground">
-              VM #{active.id} 停止中…（async，轮询到终态）
+              VM #{active.id} 停止中…（async，事件流推送终态）
             </span>
           )}
         </div>
 
-        {/* console 区：全部挂载、非激活隐藏——每台 VM 独占自己的订阅位 */}
-        <div className="min-h-[280px] flex-1">
-          {vms.map((v) => (
+        {/* console 区：全部挂载（不论看没看都在排水），同屏网格或分页切换 */}
+        <div
+          className={cn(
+            'min-h-0 flex-1',
+            layout === 'grid' ? 'grid grid-cols-1 gap-3 xl:grid-cols-2' : '',
+          )}
+        >
+          {resources.map((v) => (
             <div
               key={v.id}
-              className={cn('h-full', v.id === activeId ? 'block' : 'hidden')}
+              className={cn(
+                'min-h-[240px]',
+                layout === 'grid' ? 'h-72' : 'h-full',
+                (layout === 'tabs' && v.id === activeId) || layout === 'grid'
+                  ? 'block'
+                  : 'hidden',
+              )}
             >
               <TerminalPanel
                 token={token}
@@ -218,7 +213,7 @@ export default function VmPanel({ api, token, meta }: PanelProps) {
           <DialogHeader>
             <DialogTitle>确认停止 VM #{confirmingStop}？</DialogTitle>
             <DialogDescription>
-              破坏性操作：2s 后停产。console 页签会保留，但不再有输出——对应真实
+              破坏性操作：{STOP_DELAY_HINT}。console 页签会保留，但不再有输出——对应真实
               webui 里 stop VM 的确认。
             </DialogDescription>
           </DialogHeader>

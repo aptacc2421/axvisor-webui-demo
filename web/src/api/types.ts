@@ -3,6 +3,7 @@
 
 import type { ComponentType } from 'react'
 import type { ApiClient } from './client'
+import type { VmInfo } from './events'
 
 export interface PanelMeta {
   kind: string
@@ -15,11 +16,15 @@ export interface Manifest {
   panels: PanelMeta[]
 }
 
-/** 每个面板拿到的上下文：自己的 manifest 节点 + 一个 REST client。 */
+/** 每个面板拿到的上下文：manifest 节点 + REST client。
+ *  resources/focusVm 是壳级资源事件流的可选注入——资源型面板（vm）使用，
+ *  其它面板忽略。壳不认识任何具体 kind，只转发数据（不变量 5）。 */
 export interface PanelProps {
   meta: PanelMeta
   token: string
   api: ApiClient
+  resources?: VmInfo[]
+  focusVm?: number | null
 }
 
 export type PanelComponent = ComponentType<PanelProps>

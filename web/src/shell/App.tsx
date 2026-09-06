@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useApiClient } from '@/api/client'
+import { useResourceFeed } from '@/api/events'
 import { describeError, type Manifest, type PanelRegistry } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Nav } from './Nav'
@@ -26,11 +27,13 @@ export default function App({ registry }: { registry: PanelRegistry }) {
 
 function Shell({ registry, token }: { registry: PanelRegistry; token: string }) {
   const api = useApiClient(token)
+  const { vms, live } = useResourceFeed(token)
   const [manifest, setManifest] = useState<Manifest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [tabs, setTabs] = useState<TabState[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [focusVm, setFocusVm] = useState<number | null>(null)
   const bootstrappedRef = useRef(false)
 
   useEffect(() => {
@@ -95,6 +98,15 @@ function Shell({ registry, token }: { registry: PanelRegistry; token: string }) 
     setActiveId((cur) => (cur === id ? null : cur))
   }, [])
 
+  // 左栏资源区点击：打开/聚焦 vm 面板并聚焦那台 VM 的 console
+  const openVm = useCallback(
+    (id: number) => {
+      openPanel('vm')
+      setFocusVm(id)
+    },
+    [openPanel],
+  )
+
   return (
     <div className="flex h-screen flex-col">
       <header className="flex items-center justify-between border-b px-4 py-2">
@@ -122,7 +134,14 @@ function Shell({ registry, token }: { registry: PanelRegistry; token: string }) 
       )}
 
       <div className="flex min-h-0 flex-1">
-        <Nav panels={manifest?.panels ?? []} activeKind={activeKindOf(tabs, activeId)} onOpen={openPanel} />
+        <Nav
+          panels={manifest?.panels ?? []}
+          resources={vms}
+          live={live}
+          activeKind={activeKindOf(tabs, activeId)}
+          onOpen={openPanel}
+          onOpenVm={openVm}
+        />
         <Tabs
           panels={manifest?.panels ?? []}
           tabs={tabs}
@@ -130,6 +149,8 @@ function Shell({ registry, token }: { registry: PanelRegistry; token: string }) 
           registry={registry}
           api={api}
           token={token}
+          resources={vms}
+          focusVm={focusVm}
           onActivate={setActiveId}
           onClose={closeTab}
           onNew={newTab}

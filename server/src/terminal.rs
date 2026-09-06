@@ -232,7 +232,7 @@ fn not_found() -> Response {
         .into_response()
 }
 
-fn upgrade_required() -> Response {
+pub(crate) fn upgrade_required() -> Response {
     (
         StatusCode::UPGRADE_REQUIRED,
         Json(json!({ "error": "upgrade required" })),
@@ -240,7 +240,7 @@ fn upgrade_required() -> Response {
         .into_response()
 }
 
-fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+pub(crate) fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     let conn_upgrades = headers
         .get(header::CONNECTION)
         .and_then(|v| v.to_str().ok())

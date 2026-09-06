@@ -24,17 +24,13 @@ struct VmRequest {
     action: String,
 }
 
-pub async fn list_vms(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
-    let list = state
-        .vms
-        .list()
-        .await
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+pub async fn list_vms(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let list = state.vms.list();
     let vms = list
         .iter()
         .map(|(id, s)| json!({ "id": id, "state": s.as_str() }))
         .collect::<Vec<_>>();
-    Ok(Json(json!({ "vms": vms })))
+    Json(json!({ "vms": vms }))
 }
 
 /// body 按字节解析，不校验 Content-Type（curl 一等公民，同 counter）。

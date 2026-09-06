@@ -345,7 +345,6 @@ impl VmState {
 }
 
 enum VmCmd {
-    List(oneshot::Sender<Vec<(u64, VmState)>>),
     Create(oneshot::Sender<u64>),
     /// 回执 false = 不存在或已停止
     Stop(u64, oneshot::Sender<bool>),
@@ -359,6 +358,9 @@ enum VmCmd {
 #[derive(Clone)]
 pub struct VmManager {
     tx: mpsc::Sender<VmCmd>,
+    /// 资源列表快照的广播端：每次变更 send_replace（wake），
+    /// SSE 订阅端挂着等变化（yield）——事件驱动的核心通道。
+    state_tx: watch::Sender<Vec<(u64, VmState)>>,
 }
 
 struct VmEntry {
@@ -373,10 +375,14 @@ enum VmProducerCmd {
 }
 
 impl VmManager {
-    pub async fn list(&self) -> Option<Vec<(u64, VmState)>> {
-        let (reply, rx) = oneshot::channel();
-        self.tx.send(VmCmd::List(reply)).await.ok()?;
-        rx.await.ok()
+    /// 资源列表快照：直接读 watch 里的当前值（O(1)，不经命令通道）。
+    pub fn list(&self) -> Vec<(u64, VmState)> {
+        self.state_tx.borrow().clone()
+    }
+
+    /// 资源事件订阅：SSE 端点用它挂起等变更（wake/yield）。
+    pub fn events(&self) -> watch::Receiver<Vec<(u64, VmState)>> {
+        self.state_tx.subscribe()
     }
 
     pub async fn create(&self) -> Option<u64> {
@@ -411,6 +417,8 @@ impl VmManager {
 fn spawn_vm_manager(evidence: Evidence) -> VmManager {
     let (tx, mut rx) = mpsc::channel::<VmCmd>(32);
     let self_tx = tx.clone();
+    let (state_tx, _state_rx) = watch::channel(Vec::new());
+    let loop_tx = state_tx.clone();
 
     tokio::spawn(async move {
         let mut next_id: u64 = 1;
@@ -418,13 +426,6 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
 
         while let Some(cmd) = rx.recv().await {
             match cmd {
-                VmCmd::List(reply) => {
-                    let mut list: Vec<(u64, VmState)> =
-                        vms.iter().map(|(id, e)| (*id, e.state)).collect();
-                    list.sort_by_key(|(id, _)| *id);
-                    let _ = reply.send(list);
-                }
-
                 VmCmd::Create(reply) => {
                     let id = next_id;
                     next_id += 1;
@@ -440,7 +441,7 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                         },
                     );
                     evidence.vm_event("CREATE", id);
-                    vm_snapshot(&vms, &evidence);
+                    vm_snapshot(&vms, &evidence, &loop_tx);
                     let _ = reply.send(id);
                 }
 
@@ -458,7 +459,7 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                                 let _ = mgr_tx.send(VmCmd::FinishStop(id)).await;
                             });
                             evidence.vm_event("STOP", id);
-                            vm_snapshot(&vms, &evidence);
+                            vm_snapshot(&vms, &evidence, &loop_tx);
                             true
                         }
                         // 重复 stop 幂等接受；已停止/不存在 → false
@@ -473,7 +474,7 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                         if e.state == VmState::Stopping {
                             e.state = VmState::Stopped;
                             evidence.vm_event("STOPPED", id);
-                            vm_snapshot(&vms, &evidence);
+                            vm_snapshot(&vms, &evidence, &loop_tx);
                         }
                     }
                 }
@@ -511,13 +512,19 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
         }
     });
 
-    VmManager { tx }
+    VmManager { tx, state_tx }
 }
 
-fn vm_snapshot(vms: &HashMap<u64, VmEntry>, evidence: &Evidence) {
+/// 变更后广播：证据落盘（vms.json）+ watch 快照（wake 所有 SSE 订阅者）。
+fn vm_snapshot(
+    vms: &HashMap<u64, VmEntry>,
+    evidence: &Evidence,
+    state_tx: &watch::Sender<Vec<(u64, VmState)>>,
+) {
     let mut list: Vec<(u64, VmState)> = vms.iter().map(|(id, e)| (*id, e.state)).collect();
     list.sort_by_key(|(id, _)| *id);
     evidence.vm_snapshot(&list);
+    state_tx.send_replace(list);
 }
 
 /// 每台 VM 一个生产者：与全局 hello task 同一套不变量（有界通道、try_send、

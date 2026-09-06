@@ -29,6 +29,18 @@ export function parseControl(raw: string): ControlFrame | null {
   return null
 }
 
+/** 同源 ws(s) URL（不变量 10）：dev 走 5173 代理，集成形态直连 8080 */
+export function wsUrl(token: string, path: string): string {
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${scheme}//${location.host}${path}?token=${encodeURIComponent(token)}`
+}
+
+/** 探测用的 http(s) 版：fetch 不认 ws scheme（浏览器实测抓到的 bug） */
+export function httpUrl(token: string, path: string): string {
+  const scheme = location.protocol === 'https:' ? 'https:' : 'http:'
+  return `${scheme}//${location.host}${path}?token=${encodeURIComponent(token)}`
+}
+
 export class TermSocket {
   private ws: WebSocket | null = null
   private closedByUs = false
@@ -65,23 +77,11 @@ export class TermSocket {
     this.ws?.send(JSON.stringify({ type }))
   }
 
-  private wsUrl(): string {
-    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    // 同源相对路径的 ws 版（不变量 10）：dev 走 5173 代理，集成形态直连 8080
-    return `${scheme}//${location.host}${this.path}?token=${encodeURIComponent(this.token)}`
-  }
-
-  /** 探测用的 http(s) 版：fetch 不认 ws scheme（浏览器实测抓到的 bug） */
-  private httpUrl(): string {
-    const scheme = location.protocol === 'https:' ? 'https:' : 'http:'
-    return `${scheme}//${location.host}${this.path}?token=${encodeURIComponent(this.token)}`
-  }
-
   private async connect() {
     this.handlers.onStatus('connecting')
 
     try {
-      const probe = await fetch(this.httpUrl())
+      const probe = await fetch(httpUrl(this.token, this.path))
       if (probe.status === 409) {
         this.handlers.onStatus('busy', '该终端已被占用（独占）')
         return
@@ -93,7 +93,7 @@ export class TermSocket {
     // 探测期间可能已被 close()（组件卸载 / StrictMode 二次挂载）
     if (this.closedByUs) return
 
-    const ws = new WebSocket(this.wsUrl())
+    const ws = new WebSocket(wsUrl(this.token, this.path))
     this.ws = ws
     ws.binaryType = 'arraybuffer'
 

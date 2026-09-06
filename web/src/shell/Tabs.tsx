@@ -7,6 +7,7 @@
 //! 壳天生带这个能力——后面任何 step 插入面板，这里一行都不用改。
 
 import { Suspense, useState } from 'react'
+import type { VmInfo } from '@/api/events'
 import type { ApiClient } from '@/api/client'
 import type { PanelMeta, PanelRegistry } from '@/api/types'
 import { cn } from '@/lib/utils'
@@ -19,13 +20,16 @@ interface TabsProps {
   registry: PanelRegistry
   api: ApiClient
   token: string
+  /** 壳级资源事件流透传给面板（资源型面板使用，其余忽略） */
+  resources: VmInfo[]
+  focusVm: number | null
   onActivate: (id: string) => void
   onClose: (id: string) => void
   onNew: (kind: string) => void
 }
 
 export function Tabs(props: TabsProps) {
-  const { panels, tabs, activeId, registry, api, token, onActivate, onClose, onNew } = props
+  const { panels, tabs, activeId, registry, api, token, resources, focusVm, onActivate, onClose, onNew } = props
   const [pickerOpen, setPickerOpen] = useState(false)
 
   // 同 kind 多实例时给标签编号，方便辨认是哪个会话
@@ -113,7 +117,7 @@ export function Tabs(props: TabsProps) {
           return (
             <div key={t.id} className={cn('h-full', t.id === activeId ? 'block' : 'hidden')}>
               <Suspense fallback={<p className="text-sm text-muted-foreground">加载面板…</p>}>
-                <Panel meta={meta} api={api} token={token} />
+                <Panel meta={meta} api={api} token={token} resources={resources} focusVm={focusVm} />
               </Suspense>
             </div>
           )
