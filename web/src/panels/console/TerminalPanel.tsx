@@ -21,24 +21,21 @@ const STATUS_TEXT: Record<TermStatus, string> = {
 
 export default function TerminalPanel({
   token,
-  consolePath = '/ws/term',
-  title = '终端',
-  showPause = false,
+  consolePath,
+  title,
 }: PanelProps & {
-  /** 要连哪条 console：全局 /ws/term，或某台 VM 的 /ws/vms/{id}/console */
-  consolePath?: string
-  title?: string
-  /** 全局终端的慢消费者演示按钮（VM console 不需要） */
-  showPause?: boolean
+  /** 要连哪条 console：/ws/vms/{id}/console */
+  consolePath: string
+  title: string
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<TermStatus>('connecting')
   const [detail, setDetail] = useState<string | null>(null)
-  const [paused, setPaused] = useState(false)
   const [dropped, setDropped] = useState(0)
   const [txBytes, setTxBytes] = useState(0)
   const [rxBytes, setRxBytes] = useState(0)
   const socketRef = useRef<TermSocket | null>(null)
+  const lineRef = useRef('')
 
   useEffect(() => {
     const host = hostRef.current
@@ -69,13 +66,11 @@ export default function TerminalPanel({
           term.write(text)
         },
         onControl: (frame: ControlFrame) => {
-          if (frame.type === 'hello') {
-            term.writeln(`\x1b[36m[控制] hello proto=${frame.proto}\x1b[0m`)
-          } else if (frame.type === 'dropped') {
+          if (frame.type === 'dropped') {
             term.writeln(`\x1b[33m[控制] dropped ${frame.count}\x1b[0m`)
             setDropped((d) => d + frame.count)
           }
-          // ping 是心跳，不刷屏
+          // hello / ping：握手与心跳，不刷屏
         },
         onStatus: (s, d) => {
           setStatus(s)
@@ -86,11 +81,30 @@ export default function TerminalPanel({
     )
     socketRef.current = socket
 
-    // 用户输入走 Binary 帧；回显由 server 代演（= round-trip 证据）
+    // 行式输入：本地行编辑（回显 + 退格），回车整行发给 server；
+    // server 执行后推回输出 + 提示符——输出出现 = 命令确实到达并被执行
     const inputDisp = term.onData((data) => {
-      tx += data.length
-      setTxBytes(tx)
-      socket.send(data)
+      if (data === '\r') {
+        const line = lineRef.current
+        lineRef.current = ''
+        term.write('\r\n')
+        if (line.length > 0) {
+          tx += line.length
+          setTxBytes(tx)
+          socket.send(line)
+        } else {
+          socket.send('')
+        }
+      } else if (data === '\u007f') {
+        if (lineRef.current.length > 0) {
+          lineRef.current = lineRef.current.slice(0, -1)
+          term.write('\b \b')
+        }
+      } else if (data >= ' ') {
+        lineRef.current += data
+        term.write(data)
+      }
+      // 方向键等控制序列：demo 的 shell 不需要，忽略
     })
     const ro = new ResizeObserver(() => {
       try {
@@ -119,38 +133,12 @@ export default function TerminalPanel({
           </span>
           {dropped > 0 && <span className="text-red-400">丢帧 {dropped}</span>}
         </div>
-        <div className="flex items-center gap-2">
-          <span
-            className="font-mono text-[10px] tabular-nums"
-            title="↑ 已上行字节（你的输入）；↓ 已下行字节（含回显）。回显出现 = 输入确实到达了服务器"
-          >
-            ↑{txBytes}B ↓{rxBytes}B
-          </span>
-          {showPause &&
-            (paused ? (
-              <button
-                type="button"
-                className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-800"
-                onClick={() => {
-                  setPaused(false)
-                  socketRef.current?.resume()
-                }}
-              >
-                恢复
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-800"
-                onClick={() => {
-                  setPaused(true)
-                  socketRef.current?.pause()
-                }}
-              >
-                暂停
-              </button>
-            ))}
-        </div>
+        <span
+          className="font-mono text-[10px] tabular-nums"
+          title="↑ 已上行字节（命令行）；↓ 已下行字节（输出+提示符）。输出出现 = 命令确实到达并被执行"
+        >
+          ↑{txBytes}B ↓{rxBytes}B
+        </span>
       </div>
 
       {status === 'busy' && (

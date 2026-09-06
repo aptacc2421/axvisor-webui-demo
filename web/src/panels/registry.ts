@@ -10,16 +10,12 @@ import type { PanelComponent, PanelRegistry } from '@/api/types'
 import { FallbackPanel } from './FallbackPanel'
 
 // 懒加载：注册表里有 kind，不等于用户点了它——用到了才下载那一块代码
-const CounterPanel = lazy(() => import('./counter/CounterPanel'))
-const TerminalPanel = lazy(() => import('./terminal/TerminalPanel'))
 const VmsPanel = lazy(() => import('./vms/VmsPanel'))
 const ConsolePanel = lazy(() => import('./console/ConsolePanel'))
 
 const renderers: Record<string, PanelComponent> = {
-  counter: CounterPanel, // ← 插入一个面板，这里就加这一行
-  terminal: TerminalPanel,
-  vms: VmsPanel, // 虚拟机管理页：创建/停止/列表，零终端
-  console: ConsolePanel, // VM 终端宿主：同屏/分页，零管理按钮
+  vms: VmsPanel, // 虚拟机管理页：创建/停止/列表
+  console: ConsolePanel, // VM 终端宿主：每台 VM 一个模拟 shell
 }
 
 export function resolvePanel(kind: string): PanelComponent {

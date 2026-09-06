@@ -1,9 +1,9 @@
 //! 唯一 router() 装配点：/api + /ws + / 静态，全部 merge 进一个 Router 实例，
 //! 一个 serve（不变量 1）。curl 与浏览器走的是同一棵路由树（不变量 8）。
 
-mod counter;
 mod events;
 mod manifest;
+mod shell;
 mod state;
 mod terminal;
 mod vm;
@@ -38,13 +38,9 @@ fn router(state: AppState) -> Router {
     let dist = state.dist.clone();
     let static_files = ServeDir::new(&dist).fallback(ServeFile::new(dist.join("index.html")));
 
-    // 传输层统一鉴权：/api 与 /ws 都要过这一层。
+    // 传输层统一鉴权：/api 都要过这一层（/ws 与 /api/events 走查询参数）。
     let authed = Router::new()
         .route("/api/manifest", get(manifest::get_manifest))
-        .route(
-            "/api/counter",
-            get(counter::get_counter).post(counter::post_counter),
-        )
         .route(
             "/api/vms",
             get(vm::list_vms).post(vm::post_vms),
@@ -55,11 +51,10 @@ fn router(state: AppState) -> Router {
 
     Router::new()
         .merge(authed)
-        // ws 在浏览器里带不了 header，token 走查询参数，所以它在 authed 之外，
-        // 由 terminal.rs 自己校验——但仍在同一个 Router 上。
-        .route("/ws/term", get(terminal::ws_term))
+        // ws 在浏览器里带不了 header，token 走查询参数，由各 handler 自行校验——
+        // 但仍在同一个 Router 上。
         .route("/ws/vms/{id}/console", get(terminal::ws_vm_console))
-        // 壳级资源事件流：token 走查询参数，自带鉴权
+        // 壳级资源事件流
         .route("/ws/events", get(events::ws_events))
         // /api、/ws 下没匹配到的路径给 JSON 404，而不是落进 SPA 兜底返回 HTML——
         // curl 是一等公民（不变量 8），它拿到的响应得是接口形状。

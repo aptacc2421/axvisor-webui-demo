@@ -21,6 +21,9 @@ main
                   └─ step-6-vm-resources 资源化：VM 列表 + 每 VM console
                      └─ step-7-event-driven 事件驱动：/ws/events + 左栏资源区
                         └─ step-8-separate-views 拆分：管理页与终端独立面板
+                           └─ step-9-terminal-ux 大终端：拖拽标签融合 + 输入回执
+                              └─ step-10-shell-terminal 模拟 shell：终端收敛为
+                                 虚拟机 + VM 终端两个面板
 ```
 
 ## 当前分支：step-6-vm-resources（VM 资源化）
@@ -127,6 +130,19 @@ curl -s -X POST -H "$A" -d '{"delta":3}' localhost:8080/api/counter   # → {"va
 
 两个组件互相零 import，只共享壳注入的资源事件流——积木式组合，不焊接；
 registry 加两行、manifest 两节点，壳零改动。
+
+## 当前分支：step-10-shell-terminal（模拟 shell）
+
+面板收敛为两个（计数器与全局 hello 终端退役——hello 流的背压演示随其退场，
+独占订阅位语义保留在 VM console 上）：
+
+- **「虚拟机」**：创建/停止/列表（纯管理页）；
+- **「VM 终端」**：每台 VM 一个模拟 shell（大终端 + 标签拖拽融合）。
+
+shell 后端（`server/src/shell.rs`）在内存虚拟文件系统上支持：
+`pwd | ls | mkdir <dir> | cd <path> | echo <text> [> file | >> file] | cat <file>`。
+每台 VM 独立文件系统与工作目录，跨连接持久。命令输出即「输入到达并被执行」的
+界面内证据；`console.log` 落盘可独立复核。
 
 ## 历史分支
 

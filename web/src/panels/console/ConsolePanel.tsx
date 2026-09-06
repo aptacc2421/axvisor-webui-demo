@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { VmState } from '@/api/events'
 import type { PanelProps } from '@/api/types'
-import TerminalPanel from '../terminal/TerminalPanel'
+import TerminalPanel from './TerminalPanel'
 import { cn } from '@/lib/utils'
 
 export default function ConsolePanel({

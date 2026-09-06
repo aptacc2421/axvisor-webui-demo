@@ -1,29 +1,21 @@
 //! 执行层句柄的持有者。
 //!
-//! HTTP 层（counter.rs / terminal.rs）永远只通过这里暴露的句柄与执行层通信，
-//! 不直捣执行层状态（不变量 2）。本文件随 step 增长：
-//!   step-0: 只有静态资产目录
-//!   step-1: + counter task 的命令通道
-//!   step-2: + hello task 的订阅句柄
+//! HTTP 层（events.rs / terminal.rs / vm.rs）永远只通过这里暴露的句柄与执行层
+//! 通信，不直捣执行层状态（不变量 2）。本文件随 step 演化：
+//!   step-6: + VmManager（VM 资源）
+//!   step-10: hello 流与 counter 退役，每 VM 改持一个模拟 shell
 
 use std::{
     collections::HashMap,
     fs,
     io::Write,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::sync::mpsc::error::TrySendError;
 
-/// 前端构建产物目录。Linux 有 page cache，直读 fs 即「按需缺页」（§7）。
-fn dist_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web/dist")
-}
+use crate::shell::Shell;
 
 /// 订阅失败的两种原因：订阅位被占 / 资源不存在。
 pub enum SubErr {
@@ -34,8 +26,6 @@ pub enum SubErr {
 #[derive(Clone)]
 pub struct AppState {
     pub dist: PathBuf,
-    pub counter: CounterHandle,
-    pub hello: HelloHandle,
     pub vms: VmManager,
     pub evidence: Evidence,
 }
@@ -45,20 +35,21 @@ impl AppState {
         let evidence = Evidence::new();
         Self {
             dist: dist_dir(),
-            counter: spawn_counter(evidence.clone()),
-            hello: spawn_hello(),
             vms: spawn_vm_manager(evidence.clone()),
             evidence,
         }
     }
 }
 
+fn dist_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web/dist")
+}
+
 // ── 演示证据：执行层状态落盘 ────────────────────────────────────────────────
 //
-// UI 会骗人，文件不会。counter 每次变化重写 counter.json，终端会话把每一行
-// 收发追加进 console.log——「计数真的变了」「输入真的到了」用 cat / tail -f
-// 独立验证，不必信浏览器。（axvisor 侧无 fs，走它自己的机制，这是 §7 的
-// 平台差异在写路径上的对应物。）
+// UI 会骗人，文件不会。终端收发、VM 生命周期都写进 server/data/，
+// 「输入真的到了」「stop 真的执行了」用 cat / tail -f 独立验证。
+// （axvisor 侧无 fs，走它自己的机制，这是 §7 平台差异在写路径上的对应物。）
 
 #[derive(Clone)]
 pub struct Evidence {
@@ -81,18 +72,10 @@ impl Evidence {
             .unwrap_or(0)
     }
 
-    /// counter 每次变化就重写 counter.json
-    pub fn counter(&self, value: i64) {
-        let body = serde_json::json!({ "value": value, "updated_at_unix": Self::now() });
-        if let Err(e) = fs::write(self.dir.join("counter.json"), body.to_string()) {
-            eprintln!("[evidence] 写 counter.json 失败: {e}");
-        }
-    }
-
-    /// 终端会话收发追加进 console.log：IN = 用户输入，OUT = 下行数据。
-    /// tag 区分通道：term = 全局终端，vm{id} = 第 id 台 VM 的 console。
+    /// 终端会话收发追加进 console.log：IN = 用户命令，OUT = 执行输出/提示符。
+    /// tag 区分通道：vm{id} = 第 id 台 VM 的 console。
     pub fn console(&self, tag: &str, direction: &str, text: &str) {
-        let text = text.trim_end(); // 数据行自带 \n，日志行自己管换行
+        let text = text.trim().replace('\n', "\\n");
         let line = format!("[{}] {tag} {direction} {text}\n", Self::now());
         let path = self.dir.join("console.log");
         let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) else {
@@ -131,199 +114,12 @@ impl Evidence {
     }
 }
 
-// ── 执行层：counter task ────────────────────────────────────────────────────
-//
-// 值只被这个 task 独占拥有（不变量 2）。HTTP handler 想读写它，只能经命令通道
-// 发一个带 oneshot 回执的请求，绝不直捣。
-
-enum CounterCmd {
-    Get(oneshot::Sender<i64>),
-    Add(i64, oneshot::Sender<i64>),
-    Reset(Duration, oneshot::Sender<()>),
-    CommitReset,
-}
-
-#[derive(Clone)]
-pub struct CounterHandle {
-    tx: mpsc::Sender<CounterCmd>,
-}
-
-impl CounterHandle {
-    pub async fn get(&self) -> Option<i64> {
-        let (reply, rx) = oneshot::channel();
-        self.tx.send(CounterCmd::Get(reply)).await.ok()?;
-        rx.await.ok()
-    }
-
-    pub async fn add(&self, delta: i64) -> Option<i64> {
-        let (reply, rx) = oneshot::channel();
-        self.tx.send(CounterCmd::Add(delta, reply)).await.ok()?;
-        rx.await.ok()
-    }
-
-    /// 异步接受：只保证「复位请求已被接受」，归零发生在 delay 之后。
-    pub async fn reset(&self, delay: Duration) -> Option<()> {
-        let (reply, rx) = oneshot::channel();
-        self.tx.send(CounterCmd::Reset(delay, reply)).await.ok()?;
-        rx.await.ok()
-    }
-}
-
-fn spawn_counter(evidence: Evidence) -> CounterHandle {
-    let (tx, mut rx) = mpsc::channel::<CounterCmd>(32);
-    // reset 用的延迟提交通道：执行层自己给自己发命令，HTTP 层不参与
-    let commit_tx = tx.clone();
-    // 启动即落盘：文件从第一刻起就是真相的来源
-    evidence.counter(0);
-
-    tokio::spawn(async move {
-        let mut value: i64 = 0;
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                CounterCmd::Get(reply) => {
-                    let _ = reply.send(value);
-                }
-                CounterCmd::Add(delta, reply) => {
-                    value += delta;
-                    evidence.counter(value);
-                    let _ = reply.send(value);
-                }
-                CounterCmd::Reset(delay, reply) => {
-                    // 先回执（HTTP 层据此立刻返回 async），延迟由执行层自己收尾。
-                    // 期间 task 继续服务 Get/Add——所以前端轮询看得到「还没归零」。
-                    let _ = reply.send(());
-                    let tx = commit_tx.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(delay).await;
-                        let _ = tx.send(CounterCmd::CommitReset).await;
-                    });
-                }
-                CounterCmd::CommitReset => {
-                    value = 0;
-                    evidence.counter(0);
-                }
-            }
-        }
-    });
-
-    CounterHandle { tx }
-}
-
-// ── 执行层：hello task（数据面）──────────────────────────────────────────────
-//
-// 固定节奏生产一行，try_send 进有界通道：满则丢弃并计数，永不阻塞、永不 await
-// 重试（不变量 3）。真实系统里这条路径是 guest 串口输出，反压它会拖死 guest。
-
-/// 通道容量。
-///
-/// §4.3 写的是 32，但那与 §6「暂停 5s 后恢复，丢帧数 > 0」不相容：
-/// 32 × 500ms = 16s 才填满，5s 时丢帧必为 0。按 §9.4 记录冲突，取 §6 的
-/// 可观察行为为准，容量定为 8（8 × 500ms = 4s 开始丢帧）。改这一个常量即可换回去。
-const HELLO_CHANNEL_CAPACITY: usize = 8;
-
-const HELLO_INTERVAL: Duration = Duration::from_millis(500);
-
-/// 一次订阅：通道的 receiver 归当前 ws 会话独占所有。
-///
-/// 独占就是靠这个单一所有权实现的（§7「语义即代码」）：receiver 还在手上，
-/// 订阅位就是被占的；会话一断 receiver 被 drop，订阅位自动释放。
-pub struct HelloSubscription {
-    pub rx: mpsc::Receiver<String>,
-    /// 生产者侧的丢帧计数：满了塞不进去就 +1，会话读它来汇报。
-    pub dropped: Arc<AtomicU64>,
-}
-
-enum HelloCmd {
-    IsBusy(oneshot::Sender<bool>),
-    Subscribe(oneshot::Sender<Option<HelloSubscription>>),
-}
-
-#[derive(Clone)]
-pub struct HelloHandle {
-    tx: mpsc::Sender<HelloCmd>,
-}
-
-impl HelloHandle {
-    /// 订阅位是否被占（供 /ws/term 在 upgrade 之前判断 409）。
-    pub async fn is_busy(&self) -> bool {
-        let (reply, rx) = oneshot::channel();
-        if self.tx.send(HelloCmd::IsBusy(reply)).await.is_err() {
-            return true;
-        }
-        rx.await.unwrap_or(true)
-    }
-
-    /// 申请订阅：被占则返回 None。
-    pub async fn subscribe(&self) -> Option<HelloSubscription> {
-        let (reply, rx) = oneshot::channel();
-        self.tx.send(HelloCmd::Subscribe(reply)).await.ok()?;
-        rx.await.ok().flatten()
-    }
-}
-
-fn spawn_hello() -> HelloHandle {
-    let (tx, mut rx) = mpsc::channel::<HelloCmd>(8);
-
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(HELLO_INTERVAL);
-        let mut n: u64 = 0;
-        let mut out: Option<mpsc::Sender<String>> = None;
-        let mut dropped = Arc::new(AtomicU64::new(0));
-
-        loop {
-            tokio::select! {
-                Some(cmd) = rx.recv() => match cmd {
-                    HelloCmd::IsBusy(reply) => {
-                        let busy = out.as_ref().is_some_and(|tx| !tx.is_closed());
-                        let _ = reply.send(busy);
-                    }
-                    HelloCmd::Subscribe(reply) => {
-                        // 新订阅 = 建新通道从头开始，不做历史回放（§4.3）
-                        if out.as_ref().is_some_and(|tx| !tx.is_closed()) {
-                            let _ = reply.send(None);
-                        } else {
-                            let (line_tx, line_rx) = mpsc::channel(HELLO_CHANNEL_CAPACITY);
-                            dropped = Arc::new(AtomicU64::new(0));
-                            out = Some(line_tx);
-                            let _ = reply.send(Some(HelloSubscription {
-                                rx: line_rx,
-                                dropped: Arc::clone(&dropped),
-                            }));
-                        }
-                    }
-                },
-
-                _ = ticker.tick() => {
-                    n += 1;
-                    // 行尾带 \n：串口输出本就带行结束符，xterm 靠它换行
-                    let line = format!("hello world #{n}\n");
-                    if let Some(tx) = out.as_ref() {
-                        match tx.try_send(line) {
-                            Ok(()) => {}
-                            // 通道满：丢这一行，只计数。绝不 await 重试。
-                            Err(TrySendError::Full(_)) => {
-                                dropped.fetch_add(1, Ordering::Relaxed);
-                            }
-                            // receiver 被 drop（ws 断开）：订阅位释放，hello task 继续跑
-                            Err(TrySendError::Closed(_)) => {
-                                dropped.fetch_add(1, Ordering::Relaxed);
-                                out = None;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    HelloHandle { tx }
-}
-
 // ── 执行层：VmManager（VM 资源化）──────────────────────────────────────────
 //
-// 「计数」不再等于 VM 数：VM 是资源。每台 VM 有自己的 hello 生产者、自己的
-// 有界通道、自己的独占订阅位——同一套不变量按实例生效。stop 是异步的：
-// 接受后 2s 才停产，页签不消失、console 连接保持、只是不再有输出（停产不停服）。
+// VM 是资源。每台 VM 一份模拟 shell（内存文件系统 + 工作目录）；
+// console 独占订阅位靠「座位通道 receiver 的单一所有权」实现——
+// 会话断开 receiver 被 drop，订阅位自动释放。
+// stop 是异步的：接受后 2s 收尾（state → stopped），页签不消失。
 
 const VM_STOP_DELAY: Duration = Duration::from_secs(2);
 
@@ -344,6 +140,14 @@ impl VmState {
     }
 }
 
+/// 一次 console 订阅：shell 句柄 + 独占座位。
+pub struct ConsoleSession {
+    pub vm_id: u64,
+    pub shell: Arc<Mutex<Shell>>,
+    /// 座位通道：receiver 活着 = 订阅位被占（通道本身不运载数据）
+    _seat_rx: mpsc::Receiver<()>,
+}
+
 enum VmCmd {
     Create(oneshot::Sender<u64>),
     /// 回执 false = 不存在或已停止
@@ -352,26 +156,23 @@ enum VmCmd {
     FinishStop(u64),
     /// None = VM 不存在
     IsBusy(u64, oneshot::Sender<Option<bool>>),
-    Subscribe(u64, oneshot::Sender<Result<HelloSubscription, SubErr>>),
+    Subscribe(u64, oneshot::Sender<Result<ConsoleSession, SubErr>>),
 }
 
 #[derive(Clone)]
 pub struct VmManager {
     tx: mpsc::Sender<VmCmd>,
     /// 资源列表快照的广播端：每次变更 send_replace（wake），
-    /// SSE 订阅端挂着等变化（yield）——事件驱动的核心通道。
+    /// /ws/events 订阅端挂着等变化（yield）——事件驱动的核心通道。
     state_tx: watch::Sender<Vec<(u64, VmState)>>,
 }
 
 struct VmEntry {
     state: VmState,
-    cmd_tx: mpsc::Sender<VmProducerCmd>,
-    stop_tx: watch::Sender<bool>,
-}
-
-enum VmProducerCmd {
-    IsBusy(oneshot::Sender<bool>),
-    Subscribe(oneshot::Sender<Result<HelloSubscription, SubErr>>),
+    shell: Arc<Mutex<Shell>>,
+    /// 独占座位：None-语义不需要——订阅时换新 tx 交给会话；
+    /// 会话断开 → tx.is_closed() → 订阅位释放。
+    seat: Option<mpsc::Sender<()>>,
 }
 
 impl VmManager {
@@ -380,7 +181,7 @@ impl VmManager {
         self.state_tx.borrow().clone()
     }
 
-    /// 资源事件订阅：SSE 端点用它挂起等变更（wake/yield）。
+    /// 资源事件订阅：/ws/events 端点用它挂起等变更（wake/yield）。
     pub fn events(&self) -> watch::Receiver<Vec<(u64, VmState)>> {
         self.state_tx.subscribe()
     }
@@ -404,12 +205,11 @@ impl VmManager {
         rx.await.ok().flatten()
     }
 
-    pub async fn subscribe(&self, id: u64) -> Result<HelloSubscription, SubErr> {
+    pub async fn subscribe(&self, id: u64) -> Result<ConsoleSession, SubErr> {
         let (reply, rx) = oneshot::channel();
         if self.tx.send(VmCmd::Subscribe(id, reply)).await.is_err() {
             return Err(SubErr::NotFound);
         }
-        // 若 VM 在订阅中途被删（demo 里不会），保守按 Busy 处理
         rx.await.unwrap_or(Err(SubErr::Busy))
     }
 }
@@ -429,15 +229,13 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                 VmCmd::Create(reply) => {
                     let id = next_id;
                     next_id += 1;
-                    let (cmd_tx, cmd_rx) = mpsc::channel::<VmProducerCmd>(8);
-                    let (stop_tx, stop_rx) = watch::channel(false);
-                    spawn_vm_producer(id, cmd_rx, stop_rx);
+                    let (seat_tx, _seat_rx) = mpsc::channel::<()>(1);
                     vms.insert(
                         id,
                         VmEntry {
                             state: VmState::Running,
-                            cmd_tx,
-                            stop_tx,
+                            shell: Arc::new(Mutex::new(Shell::new())),
+                            seat: Some(seat_tx),
                         },
                     );
                     evidence.vm_event("CREATE", id);
@@ -449,13 +247,10 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                     let accepted = match vms.get_mut(&id) {
                         Some(e) if e.state == VmState::Running => {
                             e.state = VmState::Stopping;
-                            // 异步语义（同 counter 的 reset）：先回执，
-                            // 2s 后由延迟任务停产 + 收尾
-                            let stop_tx = e.stop_tx.clone();
+                            // 异步语义：先回执，2s 后由延迟任务收尾
                             let mgr_tx = self_tx.clone();
                             tokio::spawn(async move {
                                 tokio::time::sleep(VM_STOP_DELAY).await;
-                                let _ = stop_tx.send(true);
                                 let _ = mgr_tx.send(VmCmd::FinishStop(id)).await;
                             });
                             evidence.vm_event("STOP", id);
@@ -480,29 +275,26 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                 }
 
                 VmCmd::IsBusy(id, reply) => {
-                    let busy = match vms.get(&id) {
-                        Some(e) => {
-                            let (pr, prx) = oneshot::channel();
-                            if e.cmd_tx.send(VmProducerCmd::IsBusy(pr)).await.is_ok() {
-                                prx.await.ok()
-                            } else {
-                                None
-                            }
-                        }
-                        None => None,
-                    };
+                    let busy = vms
+                        .get(&id)
+                        .map(|e| e.seat.as_ref().is_some_and(|tx| !tx.is_closed()));
                     let _ = reply.send(busy);
                 }
 
-                VmCmd::Subscribe(id, reply) => match vms.get(&id) {
+                VmCmd::Subscribe(id, reply) => match vms.get_mut(&id) {
                     Some(e) => {
-                        let (pr, prx) = oneshot::channel();
-                        let res = if e.cmd_tx.send(VmProducerCmd::Subscribe(pr)).await.is_ok() {
-                            prx.await.unwrap_or(Err(SubErr::Busy))
+                        if e.seat.as_ref().is_some_and(|tx| !tx.is_closed()) {
+                            let _ = reply.send(Err(SubErr::Busy));
                         } else {
-                            Err(SubErr::Busy)
-                        };
-                        let _ = reply.send(res);
+                            // 新座位：订阅 = 接管；旧 receiver 若已被 drop 则座位已空
+                            let (seat_tx, seat_rx) = mpsc::channel::<()>(1);
+                            e.seat = Some(seat_tx);
+                            let _ = reply.send(Ok(ConsoleSession {
+                                vm_id: id,
+                                shell: Arc::clone(&e.shell),
+                                _seat_rx: seat_rx,
+                            }));
+                        }
                     }
                     None => {
                         let _ = reply.send(Err(SubErr::NotFound));
@@ -515,7 +307,6 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
     VmManager { tx, state_tx }
 }
 
-/// 变更后广播：证据落盘（vms.json）+ watch 快照（wake 所有 SSE 订阅者）。
 fn vm_snapshot(
     vms: &HashMap<u64, VmEntry>,
     evidence: &Evidence,
@@ -527,65 +318,16 @@ fn vm_snapshot(
     state_tx.send_replace(list);
 }
 
-/// 每台 VM 一个生产者：与全局 hello task 同一套不变量（有界通道、try_send、
-/// 满则丢弃计数）。收到 stop 信号后「停产不停服」：不再产出，但继续服务
-/// 订阅——console 页签保持连接，只是安静了。
-fn spawn_vm_producer(
-    id: u64,
-    mut cmd_rx: mpsc::Receiver<VmProducerCmd>,
-    mut stop_rx: watch::Receiver<bool>,
-) {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(HELLO_INTERVAL);
-        let mut n: u64 = 0;
-        let mut out: Option<mpsc::Sender<String>> = None;
-        let mut dropped = Arc::new(AtomicU64::new(0));
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        loop {
-            tokio::select! {
-                Some(cmd) = cmd_rx.recv() => match cmd {
-                    VmProducerCmd::IsBusy(reply) => {
-                        let busy = out.as_ref().is_some_and(|tx| !tx.is_closed());
-                        let _ = reply.send(busy);
-                    }
-                    VmProducerCmd::Subscribe(reply) => {
-                        // 每 VM 独占：上一个 receiver 还活着就 Busy；
-                        // 新订阅 = 新通道从头开始，不做历史回放
-                        if out.as_ref().is_some_and(|tx| !tx.is_closed()) {
-                            let _ = reply.send(Err(SubErr::Busy));
-                        } else {
-                            let (line_tx, line_rx) = mpsc::channel(HELLO_CHANNEL_CAPACITY);
-                            dropped = Arc::new(AtomicU64::new(0));
-                            out = Some(line_tx);
-                            let _ = reply.send(Ok(HelloSubscription {
-                                rx: line_rx,
-                                dropped: Arc::clone(&dropped),
-                            }));
-                        }
-                    }
-                },
-
-                Ok(_) = stop_rx.changed() => {
-                    // VM 已停：ticker 分支被下面的 if 条件禁用，产出停止
-                }
-
-                _ = ticker.tick(), if *stop_rx.borrow() == false => {
-                    n += 1;
-                    let line = format!("vm{id} hello world #{n}\n");
-                    if let Some(tx) = out.as_ref() {
-                        match tx.try_send(line) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(_)) => {
-                                dropped.fetch_add(1, Ordering::Relaxed);
-                            }
-                            Err(TrySendError::Closed(_)) => {
-                                dropped.fetch_add(1, Ordering::Relaxed);
-                                out = None;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    });
+    #[test]
+    fn shell_per_vm_is_isolated() {
+        let mut a = Shell::new();
+        let mut b = Shell::new();
+        a.execute("mkdir only-a");
+        assert_eq!(a.execute("cd only-a"), "");
+        assert!(b.execute("cd only-a").contains("No such file"));
+    }
 }
