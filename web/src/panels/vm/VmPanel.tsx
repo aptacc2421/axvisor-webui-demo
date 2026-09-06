@@ -100,11 +100,14 @@ export default function VmPanel({ api, token, meta }: PanelProps) {
       setConfirmingStop(null)
       setError(null)
       try {
-        // async 接受：状态由 1s 轮询推进（stopping → stopped）
+        // async 接受：状态由轮询推进（stopping → stopped）；
+        // 立刻刷一次让「停止中…」马上可见，不等下一个 1s 轮询
         await api.post<{ ok: boolean; async: boolean; status: string }>(
           `/api/vms/${id}/stop`,
           { action: 'stop' },
         )
+        const fresh = await api.get<{ vms: VmInfo[] }>('/api/vms')
+        setVms(fresh.vms)
       } catch (e) {
         setError(describeError(e))
       }

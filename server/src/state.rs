@@ -92,7 +92,8 @@ impl Evidence {
     /// 终端会话收发追加进 console.log：IN = 用户输入，OUT = 下行数据。
     /// tag 区分通道：term = 全局终端，vm{id} = 第 id 台 VM 的 console。
     pub fn console(&self, tag: &str, direction: &str, text: &str) {
-        let line = format!("[{}] {tag} {direction} {}\n", Self::now(), text);
+        let text = text.trim_end(); // 数据行自带 \n，日志行自己管换行
+        let line = format!("[{}] {tag} {direction} {text}\n", Self::now());
         let path = self.dir.join("console.log");
         let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) else {
             eprintln!("[evidence] 打开 console.log 失败");
@@ -294,7 +295,8 @@ fn spawn_hello() -> HelloHandle {
 
                 _ = ticker.tick() => {
                     n += 1;
-                    let line = format!("hello world #{n}");
+                    // 行尾带 \n：串口输出本就带行结束符，xterm 靠它换行
+                    let line = format!("hello world #{n}\n");
                     if let Some(tx) = out.as_ref() {
                         match tx.try_send(line) {
                             Ok(()) => {}
@@ -562,7 +564,7 @@ fn spawn_vm_producer(
 
                 _ = ticker.tick(), if *stop_rx.borrow() == false => {
                     n += 1;
-                    let line = format!("vm{id} hello world #{n}");
+                    let line = format!("vm{id} hello world #{n}\n");
                     if let Some(tx) = out.as_ref() {
                         match tx.try_send(line) {
                             Ok(()) => {}
