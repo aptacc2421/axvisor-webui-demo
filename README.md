@@ -53,7 +53,7 @@ cd web && npm i && npm run dev   # :5173（/api、/ws 代理）
 - **「虚拟机」**（`panels/vms/`）：创建/停止/列表（纯管理页，零终端）；
 - **「VM 终端」**（`panels/console/`）：每台 VM 一个模拟 shell（纯终端宿主，零管理按钮）。
 
-shell 后端（`server/src/shell.rs`）在内存虚拟文件系统上支持：
+shell 后端（`server/src/shell.rs`，架构详见 [ARCHITECTURE.md](ARCHITECTURE.md)）在内存虚拟文件系统上支持：
 `pwd | ls | mkdir <dir> | cd <path> | echo <text> [> file | >> file] | cat <file>`。
 每台 VM 独立文件系统与工作目录，跨连接持久。命令输出即「输入到达并被执行」的
 界面内证据（终端右上角有 ↑/↓ 字节计数）；`console.log` 落盘可独立复核。
