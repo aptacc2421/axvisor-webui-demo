@@ -26,6 +26,18 @@ main
                                  虚拟机 + VM 终端两个面板
 ```
 
+## 分支剧本（三幕）
+
+| 分支 | 有什么 | 演示什么 |
+| --- | --- | --- |
+| `bare` | 单根 Router + 空 manifest + 壳 + /ws/events（恒空）+ JSON 404 兜底 | 「壳本身」：curl 一等公民、fallback、资源区空转 |
+| `with-vms` | + VmManager（创建/异步 stop/列表）+ 虚拟机管理面板 + 资源区活起来 | 「后端挂上 = 界面出现」：事件驱动、证据落盘 |
+| `full` | + 模拟 shell（pwd/ls/mkdir/cd/echo/cat）+ VM 终端面板（大终端 + 拖拽融合） | 「资源有了终端」：每 VM 独占 console、命令输出即回执 |
+
+每一步都验证过插拔成本：with-vms 壳零改动；full 只改了 openVm 的一行目标。
+
+## 当前分支：full（都有）
+
 ## 当前分支：step-6-vm-resources（VM 资源化）
 
 **「计数」升级为「资源」**——这一步把 demo 推向真实 webui 的资源模型：
@@ -144,7 +156,7 @@ shell 后端（`server/src/shell.rs`）在内存虚拟文件系统上支持：
 每台 VM 独立文件系统与工作目录，跨连接持久。命令输出即「输入到达并被执行」的
 界面内证据；`console.log` 落盘可独立复核。
 
-## 历史分支
+## 旧分支链（历史存档）
 
 前几步各自演示的思想（完整改动面见各分支的 README 与 commit message）：
 

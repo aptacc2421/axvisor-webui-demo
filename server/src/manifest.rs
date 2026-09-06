@@ -1,7 +1,6 @@
 //! GET /api/manifest —— 资源层发现。
 //!
 //! 前端导航 100% 由这里的数据生成（不变量 5）：后端挂上 = 界面出现。
-//! with-vms 阶段：挂上「虚拟机」管理面板。
 
 use axum::Json;
 use serde::Serialize;
@@ -22,10 +21,18 @@ pub struct Manifest {
 pub async fn get_manifest() -> Json<Manifest> {
     Json(Manifest {
         proto: 1,
-        panels: vec![PanelMeta {
-            kind: "vms",
-            title: "虚拟机",
-            verbs: vec!["read", "write"],
-        }],
+        panels: vec![
+            // step-10 聚焦后的两个面板：
+            PanelMeta {
+                kind: "vms",
+                title: "虚拟机",
+                verbs: vec!["read", "write"],
+            },
+            PanelMeta {
+                kind: "console",
+                title: "VM 终端",
+                verbs: vec!["read", "write", "stream"],
+            },
+        ],
     })
 }
