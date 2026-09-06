@@ -99,9 +99,16 @@ function Shell({ registry, token }: { registry: PanelRegistry; token: string }) 
     <div className="flex h-screen flex-col">
       <header className="flex items-center justify-between border-b px-4 py-2">
         <span className="text-sm font-semibold">webui_demo</span>
-        <span className="text-xs text-muted-foreground">
-          manifest proto {manifest?.proto ?? '-'} · {manifest?.panels.length ?? 0} 个面板
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">
+            manifest proto {manifest?.proto ?? '-'} · {manifest?.panels.length ?? 0} 个面板
+          </span>
+          {/* 重扫注册端点：后端插拔了能力，点一下导航就跟着变——
+              运行时验证「后端挂上 = 界面出现」，不必刷新页面 */}
+          <Button size="sm" variant="ghost" onClick={() => setReloadKey((k) => k + 1)}>
+            刷新能力清单
+          </Button>
+        </div>
       </header>
 
       {error && (
