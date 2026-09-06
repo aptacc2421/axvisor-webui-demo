@@ -1,6 +1,7 @@
 //! GET /api/manifest —— 资源层发现。
 //!
 //! 前端导航 100% 由这里的数据生成（不变量 5）：后端挂上 = 界面出现。
+//! bare 阶段：没有任何面板——导航能力区为空，演示「壳本身」。
 
 use axum::Json;
 use serde::Serialize;
@@ -21,18 +22,6 @@ pub struct Manifest {
 pub async fn get_manifest() -> Json<Manifest> {
     Json(Manifest {
         proto: 1,
-        panels: vec![
-            // step-10 聚焦后的两个面板：
-            PanelMeta {
-                kind: "vms",
-                title: "虚拟机",
-                verbs: vec!["read", "write"],
-            },
-            PanelMeta {
-                kind: "console",
-                title: "VM 终端",
-                verbs: vec!["read", "write", "stream"],
-            },
-        ],
+        panels: vec![],
     })
 }

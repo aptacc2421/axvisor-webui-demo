@@ -3,17 +3,14 @@
 
 mod events;
 mod manifest;
-mod shell;
 mod state;
-mod terminal;
-mod vm;
 
 use axum::{
     extract::{Request, State},
     http::header,
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, get},
     Router,
 };
 use state::AppState;
@@ -38,23 +35,15 @@ fn router(state: AppState) -> Router {
     let dist = state.dist.clone();
     let static_files = ServeDir::new(&dist).fallback(ServeFile::new(dist.join("index.html")));
 
-    // 传输层统一鉴权：/api 都要过这一层（/ws 与 /api/events 走查询参数）。
+    // 传输层统一鉴权：/api 都要过这一层（/ws 走查询参数，由 handler 自校验）。
     let authed = Router::new()
         .route("/api/manifest", get(manifest::get_manifest))
-        .route(
-            "/api/vms",
-            get(vm::list_vms).post(vm::post_vms),
-        )
-        .route("/api/vms/{id}/stop", post(vm::post_vm_stop))
         .layer(middleware::from_fn(require_token))
         .with_state(state.clone());
 
     Router::new()
         .merge(authed)
-        // ws 在浏览器里带不了 header，token 走查询参数，由各 handler 自行校验——
-        // 但仍在同一个 Router 上。
-        .route("/ws/vms/{id}/console", get(terminal::ws_vm_console))
-        // 壳级资源事件流
+        // 壳级资源事件流：token 走查询参数，自带鉴权
         .route("/ws/events", get(events::ws_events))
         // /api、/ws 下没匹配到的路径给 JSON 404，而不是落进 SPA 兜底返回 HTML——
         // curl 是一等公民（不变量 8），它拿到的响应得是接口形状。

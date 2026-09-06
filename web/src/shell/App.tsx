@@ -33,7 +33,7 @@ function Shell({ registry, token }: { registry: PanelRegistry; token: string }) 
   const [reloadKey, setReloadKey] = useState(0)
   const [tabs, setTabs] = useState<TabState[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
-  const [focusVm, setFocusVm] = useState<number | null>(null)
+  const [focusVm] = useState<number | null>(null)
   const bootstrappedRef = useRef(false)
 
   useEffect(() => {
@@ -98,11 +98,11 @@ function Shell({ registry, token }: { registry: PanelRegistry; token: string }) 
     setActiveId((cur) => (cur === id ? null : cur))
   }, [])
 
-  // 左栏资源区点击：打开/聚焦 VM 终端面板并聚焦那台 VM 的 console
+  // 左栏资源区点击。bare 阶段没有任何资源，这里不会触发；
+  // with-vms 起打开 vms 面板，full 起打开 VM 终端面板并聚焦。
   const openVm = useCallback(
-    (id: number) => {
-      openPanel('console')
-      setFocusVm(id)
+    (_id: number) => {
+      openPanel('vms')
     },
     [openPanel],
   )
