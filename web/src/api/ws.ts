@@ -36,6 +36,7 @@ export class TermSocket {
   constructor(
     private readonly token: string,
     private readonly handlers: TermHandlers,
+    private readonly path = '/ws/term',
   ) {
     void this.connect()
   }
@@ -67,7 +68,7 @@ export class TermSocket {
   private url(): string {
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
     // 同源相对路径的 ws 版（不变量 10）：dev 走 5173 代理，集成形态直连 8080
-    return `${scheme}//${location.host}/ws/term?token=${encodeURIComponent(this.token)}`
+    return `${scheme}//${location.host}${this.path}?token=${encodeURIComponent(this.token)}`
   }
 
   private async connect() {

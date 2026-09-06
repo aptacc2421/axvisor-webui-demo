@@ -28,7 +28,13 @@ const STATUS_TEXT: Record<TermStatus, string> = {
   closed: '已断开',
 }
 
-export default function TerminalPanel({ token }: PanelProps) {
+export default function TerminalPanel({
+  token,
+  consolePath = '/ws/term',
+}: PanelProps & {
+  /** 要连哪条 console：全局 /ws/term，或某台 VM 的 /ws/vms/{id}/console */
+  consolePath?: string
+}) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<TermStatus>('connecting')
   const [detail, setDetail] = useState<string | null>(null)
@@ -54,22 +60,26 @@ export default function TerminalPanel({ token }: PanelProps) {
       // 标签处于 hidden 状态时容器尺寸为 0，fit 会拒绝——激活后再由 ResizeObserver 补上
     }
 
-    const socket = new TermSocket(token, {
-      onData: (text) => term.write(text),
-      onControl: (frame: ControlFrame) => {
-        if (frame.type === 'hello') {
-          term.writeln(`\x1b[36m[控制] hello proto=${frame.proto}\x1b[0m`)
-        } else if (frame.type === 'dropped') {
-          term.writeln(`\x1b[33m[控制] dropped ${frame.count}\x1b[0m`)
-          setDropped((d) => d + frame.count)
-        }
-        // ping 是心跳，不刷屏
+    const socket = new TermSocket(
+      token,
+      {
+        onData: (text) => term.write(text),
+        onControl: (frame: ControlFrame) => {
+          if (frame.type === 'hello') {
+            term.writeln(`\x1b[36m[控制] hello proto=${frame.proto}\x1b[0m`)
+          } else if (frame.type === 'dropped') {
+            term.writeln(`\x1b[33m[控制] dropped ${frame.count}\x1b[0m`)
+            setDropped((d) => d + frame.count)
+          }
+          // ping 是心跳，不刷屏
+        },
+        onStatus: (s, d) => {
+          setStatus(s)
+          setDetail(d ?? null)
+        },
       },
-      onStatus: (s, d) => {
-        setStatus(s)
-        setDetail(d ?? null)
-      },
-    })
+      consolePath,
+    )
     socketRef.current = socket
 
     // 用户输入走 Binary 帧，回显由 server 代演
@@ -89,7 +99,7 @@ export default function TerminalPanel({ token }: PanelProps) {
       socket.close()
       term.dispose()
     }
-  }, [token])
+  }, [token, consolePath])
 
   return (
     <Card className="flex h-full flex-col">

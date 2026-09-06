@@ -18,7 +18,44 @@ main
          └─ step-3-unplug 拔出：manifest 删一个节点，后端能力无损
             └─ step-4-compose 组合：控制 + console 同屏（零后端触点）
                └─ step-5-evidence 落盘：状态可 cat / tail -f 独立验证
+                  └─ step-6-vm-resources 资源化：VM 列表 + 每 VM console
 ```
+
+## 当前分支：step-6-vm-resources（VM 资源化）
+
+**「计数」升级为「资源」**——这一步把 demo 推向真实 webui 的资源模型：
+
+| 接口 | 语义 |
+| --- | --- |
+| `GET /api/vms` | VM 列表（id + state: running/stopping/stopped） |
+| `POST /api/vms {"action":"create"}` | 创建，同步返回新 id |
+| `POST /api/vms/{id}/stop` | **异步接受**，2s 后停产（同 reset 语义） |
+| `/ws/vms/{id}/console?token=` | 每 VM 一条 console，**每 VM 独占**订阅位 |
+
+虚拟机面板的行为：
+
+- 面板上的「N 台」徽章 = `GET /api/vms` 的长度——计数来自资源层，**不是**
+  兄弟 counter 面板的值；
+- 点「创建 VM（+1）」→ 立即多出一个 console 子页签；
+- 点「停止 VM」→ 过确认框 → async 接受 → 页签**不消失**，console 连接保持，
+  只是 2s 后不再有输出（「停产不停服」）；
+- 子页签在面板内部管理，壳毫不知情——组合发生在「资源 + API」层，
+  不发生在兄弟组件之间（耦合红线）。
+
+每台 VM 一个 hello 生产者，遵守同一套不变量：有界通道 8、try_send 满则丢弃
+计数、独占订阅位。证据落盘同样按实例生效：
+
+```bash
+cat server/data/vms.json        # [{"id":1,"state":"stopped"},...]
+tail -f server/data/vms.log     # [..] CREATE vm1 → STOP vm1 → STOPPED vm1
+tail -f server/data/console.log # vm1 OUT ... / vm1 IN "..." / term OUT ...
+```
+
+> **SPEC 修订记录**：本分支解除 §8 对「多 counter 资源/多终端通道」的排除
+> （用户确认）。counter 面板保留为独立的「async + 轮询」语义演示；
+> counter 的 stop/生命周期角色由 VM 资源接手。
+> terminal.rs 顺带把两条 ws 路由的共同握手抽成 ws_common（token → 订阅位
+> 检查 → 探测 426 → 订阅 → upgrade），两路由行为完全一致。
 
 ## 当前分支：step-5-evidence（演示证据落盘）
 

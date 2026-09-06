@@ -5,13 +5,14 @@ mod counter;
 mod manifest;
 mod state;
 mod terminal;
+mod vm;
 
 use axum::{
     extract::{Request, State},
     http::header,
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post},
     Router,
 };
 use state::AppState;
@@ -43,6 +44,11 @@ fn router(state: AppState) -> Router {
             "/api/counter",
             get(counter::get_counter).post(counter::post_counter),
         )
+        .route(
+            "/api/vms",
+            get(vm::list_vms).post(vm::post_vms),
+        )
+        .route("/api/vms/{id}/stop", post(vm::post_vm_stop))
         .layer(middleware::from_fn(require_token))
         .with_state(state.clone());
 
@@ -51,6 +57,7 @@ fn router(state: AppState) -> Router {
         // ws 在浏览器里带不了 header，token 走查询参数，所以它在 authed 之外，
         // 由 terminal.rs 自己校验——但仍在同一个 Router 上。
         .route("/ws/term", get(terminal::ws_term))
+        .route("/ws/vms/{id}/console", get(terminal::ws_vm_console))
         // /api、/ws 下没匹配到的路径给 JSON 404，而不是落进 SPA 兜底返回 HTML——
         // curl 是一等公民（不变量 8），它拿到的响应得是接口形状。
         .route("/api/{*path}", any(api_not_found))

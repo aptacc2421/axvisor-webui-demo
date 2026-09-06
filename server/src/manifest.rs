@@ -22,15 +22,21 @@ pub async fn get_manifest() -> Json<Manifest> {
     Json(Manifest {
         proto: 1,
         panels: vec![
-            // step-3 拔出演示：counter 节点从这里删掉——面板代码、路由、执行层
-            // 全都还在，拔的只是「UI 挂载」。POST /api/counter 照常 200。
+            // counter 回归本位：独立资源演示（reset 的 async + 轮询语义）。
+            // step-3 拔过它——重插 = 加回一个 JSON 节点，面板代码一直在。
+            PanelMeta {
+                kind: "counter",
+                title: "计数器",
+                verbs: vec!["read", "write"],
+            },
+            // step-2 挂上的功能 B：全局终端
             PanelMeta {
                 kind: "terminal",
                 title: "终端",
                 verbs: vec!["read", "write", "stream"],
             },
-            // step-4 组合面板：不加任何后端，只拼已有面板——对应真实 webui
-            // 的 VM 详情页（控制 + console 同屏）
+            // step-4 引入、step-6 资源化的组合面板：
+            // VM 列表 + 生命周期 + 每 VM console 子页签
             PanelMeta {
                 kind: "vm",
                 title: "虚拟机",
