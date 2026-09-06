@@ -8,15 +8,43 @@ axvisor webui 目标架构在 Linux 上的**可运行等价物**：前端与真�
 
 ---
 
-## 当前分支：step-0-shell（骨架）
+## 分支路线
 
-演示的思想：**单根 Router + manifest 驱动导航 + 未知 kind 降级**。
+```text
+main
+└─ step-0-shell      骨架：单根 Router + manifest + 壳 + 未知 kind 降级
+   └─ step-1-counter 插入功能 A：POST 控制面 + VM 交互语义
+      └─ step-2-terminal  插入功能 B：ws 终端（背压 + 独占）
+         └─ step-3-unplug 拔出：manifest 删一个节点，后端能力无损
+```
 
-- 一个 Router、一次 serve：`/api`、`/ws`、静态资产全在同一棵路由树上，
-  curl 和浏览器走同一个入口。
-- 导航项 100% 来自 `GET /api/manifest`，壳里没有一处 kind 硬编码。
-- step-0 的 manifest 只暴露 `probe`——**故意没有渲染器**，用来演示降级：
-  未知 kind 渲染成 JSON 视图，不白屏、不报错。
+## 当前分支：step-1-counter（插入功能 A）
+
+这一步演示 **插一个功能的成本**：
+
+```bash
+git diff step-0-shell step-1-counter --stat
+```
+
+改动面就这些（其余零改动，shell 一行没碰）：
+
+| 触点 | 文件 | 改了什么 |
+| --- | --- | --- |
+| 执行层 | `server/src/state.rs` | counter task：值 + 命令通道 + reset 延迟提交 |
+| HTTP 薄壳 | `server/src/counter.rs`（新增） | GET / delta / reset-async 三个操作 |
+| 挂载 | `server/src/main.rs` | `mod counter;` + 一条 route |
+| 资源层 | `server/src/manifest.rs` | 加一个 counter 节点 |
+| 渲染器 | `web/src/panels/counter/`（新增） | 面板本体 |
+| 注册表 | `web/src/panels/registry.ts` | 一行 `counter: CounterPanel` |
+
+演示的思想：
+
+- **控制面是薄壳**：值只被 counter task 独占拥有（不变量 2），handler 只能经
+  通道发命令，零直捣。
+- **reset 的异步语义**：POST 只回「已接受」，2s 后才归零；前端轮询到终态、
+  10s 超时显式报错。这就是真实 webui 里 start/stop VM 的交互形状。
+- **后端挂上 = 界面出现**：manifest 多一个节点，导航就多一项「计数器」，
+  壳没改一行。
 
 ## 运行（三种形态）
 
@@ -63,8 +91,30 @@ curl -s -H 'Authorization: Bearer demo-token' localhost:8080/api/nope
 # → {"error":"not found"}
 ```
 
-浏览器：输入 `demo-token` → 左侧导航出现「探针」→ 点开是 JSON 降级视图
-（标题旁有「未注册 kind：probe」徽章）。
+浏览器：输入 `demo-token` → 左侧导航出现「探针」与「计数器」→
+「探针」是 JSON 降级视图（标题旁有「未注册 kind：probe」徽章），
+「计数器」是功能完整的面板。
+
+### step-1 追加验收
+
+```bash
+A='Authorization: Bearer demo-token'
+
+# delta 同步：两次 +1 后值为 2
+curl -s -X POST -H "$A" -d '{"delta":1}' localhost:8080/api/counter
+curl -s -X POST -H "$A" -d '{"delta":1}' localhost:8080/api/counter
+# → {"value":1} → {"value":2}
+
+# reset 异步接受：立刻返回，2s 后才归零
+curl -s -X POST -H "$A" -d '{"reset":true}' localhost:8080/api/counter
+# → {"ok":true,"async":true,"status":"resetting"}
+curl -s -H "$A" localhost:8080/api/counter       # 立刻查：还是 2（没归零）
+sleep 2.5
+curl -s -H "$A" localhost:8080/api/counter       # → {"value":0}
+```
+
+浏览器：点 +1/-1 值立刻变；点 reset 弹确认框；确认后按钮进入 pending 且全部
+禁用（防重），面板轮询到归零才解禁。错误时按「HTTP 状态 + 后端 error」两维显示。
 
 ## 目录
 

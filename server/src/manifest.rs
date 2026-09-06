@@ -21,11 +21,19 @@ pub struct Manifest {
 pub async fn get_manifest() -> Json<Manifest> {
     Json(Manifest {
         proto: 1,
-        // step-0 只暴露 probe：没有对应渲染器，用于演示未知 kind 的降级（不变量 7）
-        panels: vec![PanelMeta {
-            kind: "probe",
-            title: "探针",
-            verbs: vec!["read"],
-        }],
+        panels: vec![
+            // step-0 的降级演示件：没有对应渲染器（不变量 7）
+            PanelMeta {
+                kind: "probe",
+                title: "探针",
+                verbs: vec!["read"],
+            },
+            // step-1 挂上的功能 A——后端 manifest 加一个节点，前端导航就多一项
+            PanelMeta {
+                kind: "counter",
+                title: "计数器",
+                verbs: vec!["read", "write"],
+            },
+        ],
     })
 }

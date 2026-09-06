@@ -1,6 +1,7 @@
 //! 唯一 router() 装配点：/api + /ws + / 静态，全部 merge 进一个 Router 实例，
 //! 一个 serve（不变量 1）。curl 与浏览器走的是同一棵路由树（不变量 8）。
 
+mod counter;
 mod manifest;
 mod state;
 
@@ -37,6 +38,10 @@ fn router(state: AppState) -> Router {
     // 传输层统一鉴权：/api 与 /ws 都要过这一层。
     let authed = Router::new()
         .route("/api/manifest", get(manifest::get_manifest))
+        .route(
+            "/api/counter",
+            get(counter::get_counter).post(counter::post_counter),
+        )
         .layer(middleware::from_fn(require_token))
         .with_state(state.clone());
 
