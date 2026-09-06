@@ -122,7 +122,149 @@ VmManager：资源变更（create/stop 收尾）→ vm_snapshot() →
 | 文件系统证据 | 写 fs | 走 axvisor 自身机制 | §7 |
 | shell | 内存模拟 VFS | guest 串口另一端（帧协议不变） | v3 设计文档 |
 
-## 9. 边界（明确不做）
+## 9. 代码来源：哪些是手写、哪些是生成
+
+仓库里只有两类东西：**人写源码**（进 git）与**生成产物**（不进 git，构建/运行时产生）。
+没有脚手架模板代码——web 脚手架的产物只有一次性的初始骨架，本 demo 全部重写。
+
+### 手写源码（进 git）
+
+| 位置 | 内容 | 说明 |
+| --- | --- | --- |
+| `server/src/*.rs` | main / state / shell / terminal / events / manifest / vm | 全部手写；`#[cfg(test)]` 单元测试也是 |
+| `web/src/shell/*.tsx` | 壳（App/Nav/Tabs/TokenGate） | 手写 |
+| `web/src/api/*.ts` | types / client / ws / events | 手写（契约层） |
+| `web/src/panels/**/*.tsx` | vms / console 面板 | 手写 |
+| `web/src/components/ui/*.tsx` | shadcn/ui 组件 | **shadcn CLI 生成**（`npx shadcn add button ...`）——官方设计是把标准组件源码拉进仓库「归你所有」，生成一次后当源码维护，不再自动更新 |
+| 配置文件 | package.json / vite.config.ts / tsconfig.json / tailwind.config.js / postcss.config.js / Cargo.toml / index.html | 手写（shadcn init/CLI 有辅助，内容已审阅定型） |
+
+### 生成产物（不进 git，.gitignore 排除）
+
+| 位置 | 由谁生成 | 说明 |
+| --- | --- | --- |
+| `web/dist/` | `npm run build` → **vite（esbuild）** | **这就是 TS→JS 的地方**：TSX/TS 被转译、打包、压缩成 `assets/index-*.js`；`tsc --noEmit` 只做类型检查不产出文件。产物含 index.html + hash 文件名的 js/css |
+| `server/target/` | `cargo build` | Rust 编译产物（二进制在 target/debug/） |
+| `web/node_modules/` | `npm install` | 依赖安装目录 |
+| `web/package-lock.json`、`server/Cargo.lock` | npm / cargo **自动生成但进 git** | 锁定依赖精确版本，保证可复现构建 |
+| `server/data/` | 运行时证据落盘 | console.log / vms.log / vms.json（§7） |
+
+### 为什么有的是 .ts 有的是 .tsx
+
+规则一条：**文件里写了 UI 标记（JSX，如 `<Card>`、`<div>`）就是 .tsx，纯逻辑就是 .ts**。
+两者都会被 vite/esbuild 编译成 JS，没有谁更高级：
+
+```text
+.ts   逻辑与契约（没有 JSX）
+  api/types.ts      契约类型 + ApiError
+  api/client.ts     REST 封装（fetch）
+  api/ws.ts         WebSocket 客户端（TermSocket）
+  api/events.ts     资源事件订阅 hook（返回数据，不含 JSX）
+  lib/utils.ts      cn() 类名合并
+  vite.config.ts    构建配置
+.tsx  含 UI 标记（JSX 必须 .tsx 才能编译）
+  main.tsx          挂载 <App/>
+  shell/*.tsx       壳的界面
+  panels/**/*.tsx   面板与终端界面
+  components/ui/*.tsx  shadcn 基础组件
+```
+
+（服务端 Rust 没有 this 区分，统一 .rs。细节：非 UI 文件刻意用 .ts 还有个
+历史原因——`.tsx` 里 `<Foo>` 会被当 JSX 解析，类型断言得换写法，所以
+纯逻辑文件保持 .ts 更省心。）
+
+### 构建流水线
+
+```text
+web/src/*.tsx ──tsc --noEmit──▶ 类型检查（不产出）
+      │
+      └─vite build（esbuild 转译 + rollup 打包 + 压缩）──▶ web/dist/（浏览器直接吃）
+server/src/*.rs ──cargo build──▶ target/debug/webui_demo_server（运行时直读 dist）
+```
+
+要点：浏览器**从不接触 TS**——它只吃 dist 里编译后的 JS；server 直读 dist
+（§7 平台差异），所以改前端要重新 `npm run build` 才在 8080 集成形态生效
+（5173 dev 形态由 vite 即时转译，免 build）。
+
+## 10. 目录树逐文件说明（非生成文件）
+
+```text
+webui_demo/
+├── README.md                    门面导览（三幕剧本 + 运行方式）
+├── ARCHITECTURE.md              本文档
+├── SPEC.md                      最初的执行规格（历史）
+│
+├── server/                      后端（Rust + axum）
+│   ├── Cargo.toml               依赖：axum/tokio/tower-http/serde（§9 清单）
+│   └── src/
+│       ├── main.rs              唯一 router() 装配：REST + ws + 静态 + JSON 404
+│       │                        兜底 + Bearer 鉴权中间件 + / 入口
+│       ├── state.rs             AppState；Evidence 证据落盘（console.log/
+│       │                        vms.log/vms.json）；VmManager（创建/异步 stop/
+│       │                        资源 watch 广播/console 独占座位）
+│       ├── shell.rs             模拟 shell：内存虚拟文件系统 + 命令执行
+│       │                        （pwd/ls/mkdir/cd/echo>/cat）+ 单元测试
+│       ├── terminal.rs          /ws/vms/{id}/console：独占检查（409/426）+
+│       │                        行式会话（命令→执行→输出+提示符）
+│       ├── events.rs            /ws/events：资源事件广播（wake/yield）
+│       ├── manifest.rs          GET /api/manifest：面板清单（静态 JSON）
+│       └── vm.rs                /api/vms REST：列表/创建/异步停止
+│
+└── web/                         前端（React + TS + Vite）
+    ├── index.html               挂载点 #root
+    ├── package.json             依赖清单 + dev/build/test 脚本
+    ├── vite.config.ts           dev 代理（/api、/ws → 8080）+ @ 别名
+    ├── tsconfig.json            TS 选项 + @/* 路径映射
+    ├── tailwind.config.js       Tailwind 主题（shadcn 色板变量映射）
+    ├── postcss.config.js        tailwind/autoprefixer 插件
+    ├── components.json          shadcn CLI 配置（生成 ui 组件用）
+    └── src/
+        ├── main.tsx             ★ 唯一接线点：挂 <App/> 并注入 registry
+        ├── index.css            Tailwind 指令 + shadcn CSS 变量
+        │
+        ├── shell/               壳：不知道任何面板的存在（不变量 5）
+        │   ├── App.tsx          token 门 → 布局；manifest 拉取；页签状态机；
+        │   │                    资源点击路由（openVm）
+        │   ├── TokenGate.tsx    token 输入页（内存态，不落 storage）
+        │   ├── Nav.tsx          左栏：能力区（manifest 驱动）+ 资源区·实时
+        │   │                    （事件流驱动，含连接状态徽章）
+        │   └── Tabs.tsx         页签条 + 面板渲染区（全挂载 + Suspense）
+        │
+        ├── api/                 「怎么跟服务端说话」——所有跨网络代码
+        │   ├── types.ts         契约类型：PanelMeta/Manifest/PanelProps/
+        │   │                    ApiError（错误对象 = HTTP 状态 + 后端 error）
+        │   ├── client.ts        ApiClient：REST 封装（Bearer 注入、body 只读
+        │   │                    一次、错误封装）+ useApiClient（client 单例）
+        │   ├── ws.ts            wsUrl/httpUrl 助手 + TermSocket（console 通道：
+        │   │                    探测 409/426、行式收发、状态回调）
+        │   └── events.ts        EventSocket（/ws/events + 指数退避重连）+
+        │                        useResourceFeed（资源列表状态 hook）+ VmInfo
+        │
+        ├── lib/                 「跟业务无关的通用小工具」
+        │   └── utils.ts         cn()：clsx + tailwind-merge——条件类名合并
+        │                        与冲突消解（shadcn 组件全靠它）
+        │
+        ├── panels/              面板（互相零 import，只消费 props）
+        │   ├── registry.ts      ★ kind → 懒加载组件注册表；未注册 → fallback
+        │   ├── FallbackPanel.tsx 未知 kind 的 JSON 降级视图（前向兼容）
+        │   ├── vms/VmsPanel.tsx     「虚拟机」管理页：计数/创建/列表/停止
+        │   └── console/
+        │       ├── ConsolePanel.tsx   「VM 终端」宿主：分组/拖拽融合/分离
+        │       └── TerminalPanel.tsx  单个终端：xterm + 行式输入编辑 +
+        │                              ↑/↓ 字节计数条
+        │
+        └── components/ui/       shadcn 生成的基础组件（badge/button/card/
+                                dialog/input）——生成一次后当源码维护
+```
+
+### api/ 与 lib/ 为什么分两处
+
+- **`api/` 有业务语义**：它描述的是「本系统与外界的契约」——路径、鉴权方式、
+  帧格式、错误形状。协议一变，改的就是这里（且只在这里）。
+- **`lib/` 无业务语义**：`cn()` 换个项目照样用。它不知道服务端存在。
+- 分开放是为了让 diff 说话：「改协议」的提交只动 `api/`，「调样式」的提交
+  只动 `lib/` 或组件——两类变更永不混在一个文件里。
+
+## 11. 边界（明确不做）
 
 多用户/RBAC、token 轮换、SSL、历史回放、观察者/键盘分离（真实 console mux
 的形状，候选后续）、manifest 运行时热更新（当前靠分支 + 重启 + 刷新键）。
