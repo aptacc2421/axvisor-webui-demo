@@ -18,50 +18,44 @@ main
          └─ step-3-unplug 拔出：manifest 删一个节点，后端能力无损
 ```
 
-## 当前分支：step-2-terminal（插入功能 B）
+## 当前分支：step-3-unplug（拔出演示）
 
-这一步在 step-1 的基础上**再插一个功能**（ws 终端），改动面：
+前两步各自演示的思想（完整改动面见各分支的 README 与 commit message）：
 
-| 触点 | 文件 | 改了什么 |
-| --- | --- | --- |
-| 执行层 | `server/src/state.rs` | hello task：500ms 一行、try_send 进有界通道、丢弃计数 |
-| HTTP 层 | `server/src/terminal.rs`（新增） | ws upgrade、帧协议 v1、独占 409、pause/resume |
-| 挂载 | `server/src/main.rs` | `mod terminal;` + 一条 route |
-| 资源层 | `server/src/manifest.rs` | 加 terminal 节点（probe 退役：降级路径由未知 kind 继续保证） |
-| 传输层 | `web/src/api/ws.ts`（新增） | 帧协议客户端（Binary=数据 / Text=控制） |
-| 渲染器 | `web/src/panels/terminal/`（新增） | xterm 终端 + 慢消费者按钮 |
-| 注册表 | `web/src/panels/registry.ts` | 一行 `terminal: TerminalPanel` |
-| 壳 | `web/src/shell/App.tsx` `Tabs.tsx` | 「+」新开实例（每标签一个独立面板实例，§6 声明的触点） |
+- **step-1-counter**：插功能 A。counter task（值 + 命令通道）+ HTTP 薄壳 +
+  面板 + registry 一行 + manifest 一节点。控制面是薄壳，reset 的
+  「async 接受 → 轮询到终态 → 10s 超时」就是 VM 生命周期的交互语义。
+- **step-2-terminal**：插功能 B。hello task + ws 终端。两条铁律落地：
+  不反压执行侧（try_send 满则丢弃 + 计数，恢复时先发 dropped 帧、序号跳变），
+  独占订阅位（第二连接 upgrade 前被 409）。
+  > SPEC 冲突记录（§9.4）：§4.3 的「通道容量 32」与 §6 的「暂停 5s 后丢帧 > 0」
+  > 不相容（32 × 500ms = 16s 才填满）。经确认取 §6 的可观察行为，容量定为 8；
+  > 改回只需动 `state.rs` 的 `HELLO_CHANNEL_CAPACITY` 一个常量。
 
-演示的思想：
-
-- **不反压执行侧（不变量 3）**：hello 生产者每 500ms 产一行，`try_send` 进有界
-  通道；满了就丢弃 + 计数，永不阻塞、永不重试。点「暂停（模拟慢消费者）」，
-  会话停止消费，约 4s 后通道溢出；点「恢复」，先收到 `dropped` 帧，
-  数据序号跳变——证明暂停期间生产从未停止，只是丢了帧。
-- **独占订阅位（不变量 4）**：receiver 的单一所有权就是独占语义（§7「语义即代码」）。
-  第二个终端标签的连接在 upgrade 之前被 409 拒绝，面板显示「该终端已被占用」。
-  浏览器 WebSocket 拿不到握手状态码，所以前端先用不带 Upgrade 头的
-  普通 fetch 探测同一路由（被占 → 409；空闲 → 426）。
-- **curl 一等公民**：以上行为全部可以用下面的命令复现。
-
-### step-2 追加验收
+**拔一个功能 = 删 manifest 里一个节点。**
 
 ```bash
-# 探测：订阅位空闲时 426（欢迎升级），被占时 409
-curl -s -w '\n%{http_code}\n' 'localhost:8080/ws/term?token=demo-token'
-# 无 token 401
-curl -s -o /dev/null -w '%{http_code}\n' 'localhost:8080/ws/term?token=wrong'
-
-# 浏览器：终端持续滚动 hello world #n；输入 abc 有回显；
-# 暂停 5s+ 恢复 → dropped 帧计数 > 0 且序号跳变；
-# 「+」再开一个终端标签 → 显示「该终端已被占用（独占）」。
+git diff step-2-terminal step-3-unplug --stat
+# → server/src/manifest.rs | 11 ++---------  仅此一个文件
 ```
 
-> **SPEC 冲突记录（§9.4）**：§4.3 写「容量 32 的通道」，§6 验收要求「暂停 5s
-> 后丢帧 > 0」——32 × 500ms = 16s 才填满，两者不相容。经确认取 §6 的可观察
-> 行为，容量定为 8（4s 开始丢帧）；要改回 32 只需动
-> `server/src/state.rs` 里的 `HELLO_CHANNEL_CAPACITY` 一个常量。
+counter 节点从 manifest 删除，于是：
+
+- 前端导航只剩「终端」——counter 面板的代码还在 `panels/counter/`，只是不再被加载；
+- `POST /api/counter` 照常 200——拔的是 UI 挂载，不是后端能力；
+- 终端不受影响。
+
+一句话收尾：**插一个功能 = 三个触点加一行注册；拔一个功能 = 删一行 JSON，
+且后端能力无损。** 质疑哪一步就现场 curl 哪一步。
+
+### step-3 验收
+
+```bash
+A='Authorization: Bearer demo-token'
+curl -s -H "$A" localhost:8080/api/manifest
+# → {"proto":1,"panels":[{"kind":"terminal","title":"终端","verbs":["read","write","stream"]}]}
+curl -s -X POST -H "$A" -d '{"delta":5}' localhost:8080/api/counter   # → {"value":5}
+```
 
 ## 运行（三种形态）
 

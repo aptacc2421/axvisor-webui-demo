@@ -22,15 +22,8 @@ pub async fn get_manifest() -> Json<Manifest> {
     Json(Manifest {
         proto: 1,
         panels: vec![
-            // step-1 挂上的功能 A——后端 manifest 加一个节点，前端导航就多一项
-            PanelMeta {
-                kind: "counter",
-                title: "计数器",
-                verbs: vec!["read", "write"],
-            },
-            // step-2 挂上的功能 B。
-            // probe 在这里退役：它是 step-0 演示降级用的，那时还没有任何渲染器；
-            // 现在降级路径已经由 counter/terminal 之外「未知的 kind」继续保证。
+            // step-3 拔出演示：counter 节点从这里删掉——面板代码、路由、执行层
+            // 全都还在，拔的只是「UI 挂载」。POST /api/counter 照常 200。
             PanelMeta {
                 kind: "terminal",
                 title: "终端",
