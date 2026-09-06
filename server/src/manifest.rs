@@ -29,6 +29,13 @@ pub async fn get_manifest() -> Json<Manifest> {
                 title: "终端",
                 verbs: vec!["read", "write", "stream"],
             },
+            // step-4 组合面板：不加任何后端，只拼已有面板——对应真实 webui
+            // 的 VM 详情页（控制 + console 同屏）
+            PanelMeta {
+                kind: "vm",
+                title: "虚拟机",
+                verbs: vec!["read", "write", "stream"],
+            },
         ],
     })
 }

@@ -16,11 +16,47 @@ main
    └─ step-1-counter 插入功能 A：POST 控制面 + VM 交互语义
       └─ step-2-terminal  插入功能 B：ws 终端（背压 + 独占）
          └─ step-3-unplug 拔出：manifest 删一个节点，后端能力无损
+            └─ step-4-compose 组合：控制 + console 同屏（零后端触点）
 ```
 
-## 当前分支：step-3-unplug（拔出演示）
+## 当前分支：step-4-compose（组合面板）
 
-前两步各自演示的思想（完整改动面见各分支的 README 与 commit message）：
+**插拔的第四种姿势：不加后端，只拼已有面板。**
+
+`kind:"vm"` 是一个组合面板——左边 counter（控制面），右边 terminal（数据面）
+同屏，对应真实 webui 的 VM 详情页（生命周期操作 + guest console）。
+
+```bash
+git diff step-3-unplug step-4-compose --stat
+# → panels/vm/ 新增 + registry 一行 + manifest 一个节点，后端零改动
+```
+
+演示的思想：
+
+- **壳对组合一无所知**：VmPanel 直接 import 已有的 CounterPanel/TerminalPanel，
+  不经过注册表——面板可以组合面板，壳依然只认 manifest 的 kind。
+- **独占是全局的**：组合页里的 console 占住唯一的订阅位后，再用「+」开独立
+  终端标签会撞上 409——一台 VM 的 console 只有一个，两个键盘同时敲 = 竞态。
+- **step-3 的回响**：上一步拔掉的 counter 节点没有让能力消失，这一步它以
+  组合的形式回到界面——拔掉的是挂载，留下的是积木。
+- 懒加载照常生效：VmPanel 自己只有 0.64 kB 的 chunk，counter/terminal 的
+  chunk 用到才下载。
+
+### step-4 验收
+
+```bash
+A='Authorization: Bearer demo-token'
+curl -s -H "$A" localhost:8080/api/manifest
+# → {"proto":1,"panels":[{"kind":"terminal",...},{"kind":"vm",...}]}
+curl -s -X POST -H "$A" -d '{"delta":3}' localhost:8080/api/counter   # → {"value":3}
+```
+
+浏览器：导航出现「虚拟机」→ 点开是同屏的计数器 + 终端；此时「+」再开一个
+「终端」标签 → 显示「该终端已被占用（独占）」。
+
+## 历史分支
+
+前几步各自演示的思想（完整改动面见各分支的 README 与 commit message）：
 
 - **step-1-counter**：插功能 A。counter task（值 + 命令通道）+ HTTP 薄壳 +
   面板 + registry 一行 + manifest 一节点。控制面是薄壳，reset 的
@@ -31,22 +67,7 @@ main
   > SPEC 冲突记录（§9.4）：§4.3 的「通道容量 32」与 §6 的「暂停 5s 后丢帧 > 0」
   > 不相容（32 × 500ms = 16s 才填满）。经确认取 §6 的可观察行为，容量定为 8；
   > 改回只需动 `state.rs` 的 `HELLO_CHANNEL_CAPACITY` 一个常量。
-
-**拔一个功能 = 删 manifest 里一个节点。**
-
-```bash
-git diff step-2-terminal step-3-unplug --stat
-# → server/src/manifest.rs | 11 ++---------  仅此一个文件
-```
-
-counter 节点从 manifest 删除，于是：
-
-- 前端导航只剩「终端」——counter 面板的代码还在 `panels/counter/`，只是不再被加载；
-- `POST /api/counter` 照常 200——拔的是 UI 挂载，不是后端能力；
-- 终端不受影响。
-
-一句话收尾：**插一个功能 = 三个触点加一行注册；拔一个功能 = 删一行 JSON，
-且后端能力无损。** 质疑哪一步就现场 curl 哪一步。
+- **step-3-unplug**：拔出演示，唯一改动是 manifest.rs 少一个 counter 节点。
 
 ### step-3 验收
 
@@ -139,6 +160,7 @@ web/src/
   shell/        App（token 门 → 布局 → 标签栏 → 导航）、TokenGate、Nav、Tabs
   panels/       registry.ts（kind → 组件）+ FallbackPanel（JSON 降级）
                 + counter/（计数器面板）+ terminal/（xterm 终端面板）
+                + vm/（组合面板：控制 + console 同屏）
   api/          types.ts（契约）、client.ts（REST，相对路径）、ws.ts（帧协议）
   components/   shadcn 生成：button / card / dialog / input / badge
   lib/utils.ts  cn()
