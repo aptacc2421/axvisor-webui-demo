@@ -7,12 +7,14 @@
 //!   step-2: + hello task 的订阅句柄
 
 use std::{
+    fs,
+    io::Write,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::sync::mpsc::error::TrySendError;
@@ -27,14 +29,67 @@ pub struct AppState {
     pub dist: PathBuf,
     pub counter: CounterHandle,
     pub hello: HelloHandle,
+    pub evidence: Evidence,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        let evidence = Evidence::new();
         Self {
             dist: dist_dir(),
-            counter: spawn_counter(),
+            counter: spawn_counter(evidence.clone()),
             hello: spawn_hello(),
+            evidence,
+        }
+    }
+}
+
+// ── 演示证据：执行层状态落盘 ────────────────────────────────────────────────
+//
+// UI 会骗人，文件不会。counter 每次变化重写 counter.json，终端会话把每一行
+// 收发追加进 console.log——「计数真的变了」「输入真的到了」用 cat / tail -f
+// 独立验证，不必信浏览器。（axvisor 侧无 fs，走它自己的机制，这是 §7 的
+// 平台差异在写路径上的对应物。）
+
+#[derive(Clone)]
+pub struct Evidence {
+    dir: PathBuf,
+}
+
+impl Evidence {
+    pub fn new() -> Self {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
+        if let Err(e) = fs::create_dir_all(&dir) {
+            eprintln!("[evidence] 建目录失败: {e}");
+        }
+        Self { dir }
+    }
+
+    fn now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// counter 每次变化就重写 counter.json
+    pub fn counter(&self, value: i64) {
+        let body = serde_json::json!({ "value": value, "updated_at_unix": Self::now() });
+        if let Err(e) = fs::write(self.dir.join("counter.json"), body.to_string()) {
+            eprintln!("[evidence] 写 counter.json 失败: {e}");
+        }
+    }
+
+    /// 终端会话收发追加进 console.log：IN = 用户输入，OUT = 下行数据
+    pub fn console(&self, direction: &str, text: &str) {
+        let line = format!("[{}] {} {}\n", Self::now(), direction, text);
+        let path = self.dir.join("console.log");
+        let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) else {
+            eprintln!("[evidence] 打开 console.log 失败");
+            return;
+        };
+        if let Err(e) = file.write_all(line.as_bytes()) {
+            eprintln!("[evidence] 写 console.log 失败: {e}");
         }
     }
 }
@@ -77,10 +132,12 @@ impl CounterHandle {
     }
 }
 
-fn spawn_counter() -> CounterHandle {
+fn spawn_counter(evidence: Evidence) -> CounterHandle {
     let (tx, mut rx) = mpsc::channel::<CounterCmd>(32);
     // reset 用的延迟提交通道：执行层自己给自己发命令，HTTP 层不参与
     let commit_tx = tx.clone();
+    // 启动即落盘：文件从第一刻起就是真相的来源
+    evidence.counter(0);
 
     tokio::spawn(async move {
         let mut value: i64 = 0;
@@ -91,6 +148,7 @@ fn spawn_counter() -> CounterHandle {
                 }
                 CounterCmd::Add(delta, reply) => {
                     value += delta;
+                    evidence.counter(value);
                     let _ = reply.send(value);
                 }
                 CounterCmd::Reset(delay, reply) => {
@@ -103,7 +161,10 @@ fn spawn_counter() -> CounterHandle {
                         let _ = tx.send(CounterCmd::CommitReset).await;
                     });
                 }
-                CounterCmd::CommitReset => value = 0,
+                CounterCmd::CommitReset => {
+                    value = 0;
+                    evidence.counter(0);
+                }
             }
         }
     });

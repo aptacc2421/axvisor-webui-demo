@@ -105,6 +105,7 @@ export default function TerminalPanel({ token }: PanelProps) {
         </CardTitle>
         <CardDescription>
           hello 流每 500ms 一行；独占订阅位——两个终端标签同时开会撞上 409。
+          收发都记在 <code>server/data/console.log</code>（tail -f 可独立验证输入确实到了）。
         </CardDescription>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col gap-3">

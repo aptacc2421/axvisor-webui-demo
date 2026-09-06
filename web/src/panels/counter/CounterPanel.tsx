@@ -128,6 +128,7 @@ export default function CounterPanel({ api }: PanelProps) {
         <CardTitle>计数器</CardTitle>
         <CardDescription>
           值由执行层 task 独占拥有；面板只能经 REST 发命令。reset 返回 async，前端轮询到归零。
+          每次变化都落盘在 <code>server/data/counter.json</code>——cat 一下就知道没骗你。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

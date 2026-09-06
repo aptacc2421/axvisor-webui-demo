@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    state::{AppState, HelloSubscription},
+    state::{AppState, Evidence, HelloSubscription},
     TOKEN,
 };
 
@@ -66,6 +66,7 @@ pub async fn ws_term(
         return upgrade_required();
     }
 
+    let evidence = state.evidence.clone();
     let Some(sub) = state.hello.subscribe().await else {
         return (
             StatusCode::CONFLICT,
@@ -75,7 +76,7 @@ pub async fn ws_term(
     };
 
     match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
-        Ok(ws) => ws.on_upgrade(move |socket| session(socket, sub)),
+        Ok(ws) => ws.on_upgrade(move |socket| session(socket, sub, evidence)),
         Err(_) => upgrade_required(),
     }
 }
@@ -104,7 +105,7 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     conn_upgrades && upgrade_websocket
 }
 
-async fn session(mut socket: WebSocket, mut sub: HelloSubscription) {
+async fn session(mut socket: WebSocket, mut sub: HelloSubscription, evidence: Evidence) {
     // 不变量 9：连接建立后先发 hello 控制帧
     if send_control(&mut socket, &json!({ "type": "hello", "proto": 1 }))
         .await
@@ -123,6 +124,7 @@ async fn session(mut socket: WebSocket, mut sub: HelloSubscription) {
             // 暂停时故意不 recv：让通道积压、溢出丢弃（背压演示的核心）
             line = sub.rx.recv(), if !paused => match line {
                 Some(line) => {
+                    evidence.console("OUT", &line);
                     if socket.send(Message::Binary(Bytes::from(line))).await.is_err() {
                         break;
                     }
@@ -135,13 +137,19 @@ async fn session(mut socket: WebSocket, mut sub: HelloSubscription) {
                 Some(Ok(Message::Binary(data))) => {
                     // 回显：真实系统里由 guest 终端驱动做，传输层不回显；
                     // demo 由 server 代演，好让面板行为完整（§7）
+                    let text = String::from_utf8_lossy(&data).to_string();
+                    evidence.console("IN", &format!("{text:?}"));
                     if socket.send(Message::Binary(data)).await.is_err() {
                         break;
                     }
                 }
                 Some(Ok(Message::Text(text))) => match client_control(&text) {
-                    Some(ClientControl::Pause) => paused = true,
+                    Some(ClientControl::Pause) => {
+                        evidence.console("CTL", "pause");
+                        paused = true;
+                    }
                     Some(ClientControl::Resume) => {
+                        evidence.console("CTL", "resume");
                         paused = false;
                         // 恢复后先发 dropped 帧，再恢复数据流
                         let now = sub.dropped.load(std::sync::atomic::Ordering::Relaxed);

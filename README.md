@@ -17,7 +17,29 @@ main
       └─ step-2-terminal  插入功能 B：ws 终端（背压 + 独占）
          └─ step-3-unplug 拔出：manifest 删一个节点，后端能力无损
             └─ step-4-compose 组合：控制 + console 同屏（零后端触点）
+               └─ step-5-evidence 落盘：状态可 cat / tail -f 独立验证
 ```
+
+## 当前分支：step-5-evidence（演示证据落盘）
+
+**UI 会骗人，文件不会。** 执行层把状态写进 `server/data/`（已 gitignore），
+每一条演示主张都有了浏览器之外的证据：
+
+```bash
+tail -f server/data/console.log
+#   浏览器终端里敲 abc → 立刻看到 [..] IN "abc"——输入确实到了 server
+#   [..] OUT hello world #57        ← 数据面确实在生产
+#   [..] CTL pause                  ← 点了暂停
+#   （5 秒空洞：OUT 一行都没有——会话停止消费，但生产没停）
+#   [..] CTL resume
+#   [..] OUT hello world #58 ... #65（缓冲一次性吐出）
+#   [..] OUT hello world #68        ← 序号跳变：#66/#67 被丢帧
+cat server/data/counter.json
+#   点 +1 后变 {"value":1,...}；reset 异步期间仍是旧值，2s 后归零也记录在案
+```
+
+改动只在执行层（state.rs 的 Evidence + counter task 落盘、terminal.rs 会话
+记 IN/OUT/CTL），HTTP 层、前端、契约零变化——证据是执行层的副产品，不是新接口。
 
 ## 当前分支：step-4-compose（组合面板）
 
@@ -68,6 +90,9 @@ curl -s -X POST -H "$A" -d '{"delta":3}' localhost:8080/api/counter   # → {"va
   > 不相容（32 × 500ms = 16s 才填满）。经确认取 §6 的可观察行为，容量定为 8；
   > 改回只需动 `state.rs` 的 `HELLO_CHANNEL_CAPACITY` 一个常量。
 - **step-3-unplug**：拔出演示，唯一改动是 manifest.rs 少一个 counter 节点。
+- **step-4-compose**：组合面板 vm——控制 + console 同屏，零后端触点。壳对组合
+  一无所知（VmPanel 直接 import 已有面板组件）；独占是全局的（组合页的 console
+  占住订阅位后，独立终端标签撞 409）。
 
 ### step-3 验收
 
