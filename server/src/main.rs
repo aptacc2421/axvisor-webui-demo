@@ -4,13 +4,14 @@
 mod events;
 mod manifest;
 mod state;
+mod vm;
 
 use axum::{
     extract::{Request, State},
     http::header,
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post},
     Router,
 };
 use state::AppState;
@@ -38,6 +39,8 @@ fn router(state: AppState) -> Router {
     // 传输层统一鉴权：/api 都要过这一层（/ws 走查询参数，由 handler 自校验）。
     let authed = Router::new()
         .route("/api/manifest", get(manifest::get_manifest))
+        .route("/api/vms", get(vm::list_vms).post(vm::post_vms))
+        .route("/api/vms/{id}/stop", post(vm::post_vm_stop))
         .layer(middleware::from_fn(require_token))
         .with_state(state.clone());
 

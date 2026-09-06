@@ -55,7 +55,7 @@ pub async fn ws_events(
 
 async fn session(
     mut socket: WebSocket,
-    mut rx: tokio::sync::watch::Receiver<Vec<serde_json::Value>>,
+    mut rx: tokio::sync::watch::Receiver<Vec<(u64, crate::state::VmState)>>,
 ) {
     // 连接即得一帧当前快照（bare 恒为空），此后无变更 → 挂起保持连接
     let list = rx.borrow().clone();
@@ -82,8 +82,12 @@ async fn session(
     }
 }
 
-async fn push(socket: &mut WebSocket, list: &[serde_json::Value]) -> Result<(), axum::Error> {
-    send(socket, &json!({ "type": "vms", "vms": list })).await
+async fn push(socket: &mut WebSocket, list: &[(u64, crate::state::VmState)]) -> Result<(), axum::Error> {
+    let vms = list
+        .iter()
+        .map(|(id, s)| json!({ "id": id, "state": s.as_str() }))
+        .collect::<Vec<_>>();
+    send(socket, &json!({ "type": "vms", "vms": vms })).await
 }
 
 async fn send(socket: &mut WebSocket, frame: &serde_json::Value) -> Result<(), axum::Error> {
