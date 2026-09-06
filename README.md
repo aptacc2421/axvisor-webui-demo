@@ -38,6 +38,7 @@ cd web && npm i && npm run dev   # :5173（/api、/ws 代理）
 
 ## 文档
 
+- [ARCHITECTURE.md](ARCHITECTURE.md)：架构文档——全景图、三条通道、壳面板接缝、事件驱动、独占座位、证据落盘。
 - [SPEC.md](SPEC.md)：最初的执行规格（12 条不变量），历史规格。
 - [full 分支 README](blob/full/README.md)：三幕剧本与每步的实现决定。
 - 设计文档对照：axvisor 仓库 `docs/design/axvisor-webui-control-plane-architecture.v3.md`。
