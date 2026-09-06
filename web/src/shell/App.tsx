@@ -98,10 +98,10 @@ function Shell({ registry, token }: { registry: PanelRegistry; token: string }) 
     setActiveId((cur) => (cur === id ? null : cur))
   }, [])
 
-  // 左栏资源区点击：打开/聚焦 vm 面板并聚焦那台 VM 的 console
+  // 左栏资源区点击：打开/聚焦 VM 终端面板并聚焦那台 VM 的 console
   const openVm = useCallback(
     (id: number) => {
-      openPanel('vm')
+      openPanel('console')
       setFocusVm(id)
     },
     [openPanel],

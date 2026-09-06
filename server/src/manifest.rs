@@ -35,12 +35,18 @@ pub async fn get_manifest() -> Json<Manifest> {
                 title: "终端",
                 verbs: vec!["read", "write", "stream"],
             },
-            // step-4 引入、step-6 资源化的组合面板：
-            // VM 列表 + 生命周期 + 每 VM console 子页签
+            // step-8 拆分：管理页与终端宿主是两个独立面板（积木式组合）——
+            // 「虚拟机」= 创建/停止/列表（零终端）；「VM 终端」= 同屏/分页
+            // 展示所有 VM 的 console（零管理按钮）。左栏资源点击直达终端。
             PanelMeta {
-                kind: "vm",
+                kind: "vms",
                 title: "虚拟机",
-                verbs: vec!["read", "write", "stream"],
+                verbs: vec!["read", "write"],
+            },
+            PanelMeta {
+                kind: "console",
+                title: "VM 终端",
+                verbs: vec!["read", "stream"],
             },
         ],
     })

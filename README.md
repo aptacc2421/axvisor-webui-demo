@@ -19,6 +19,8 @@ main
             └─ step-4-compose 组合：控制 + console 同屏（零后端触点）
                └─ step-5-evidence 落盘：状态可 cat / tail -f 独立验证
                   └─ step-6-vm-resources 资源化：VM 列表 + 每 VM console
+                     └─ step-7-event-driven 事件驱动：/ws/events + 左栏资源区
+                        └─ step-8-separate-views 拆分：管理页与终端独立面板
 ```
 
 ## 当前分支：step-6-vm-resources（VM 资源化）
@@ -113,6 +115,19 @@ curl -s -X POST -H "$A" -d '{"delta":3}' localhost:8080/api/counter   # → {"va
 浏览器：导航出现「虚拟机」→ 点开是同屏的计数器 + 终端；此时「+」再开一个
 「终端」标签 → 显示「该终端已被占用（独占）」。
 
+## 当前分支：step-8-separate-views（管理页与终端分离）
+
+参照 deepseek-harness（一切皆插件：壳只提供 slot，功能组件零 import 经注册表装配）
+把 vm 组合面板拆成两个独立面板——「创建虚拟机的页面和终端不是同一个页面」：
+
+- **「虚拟机」面板**（`panels/vms/`）：纯管理页——计数、创建、列表、停止，零终端；
+- **「VM 终端」面板**（`panels/console/`）：纯终端宿主——同屏/分页展示所有 VM 的
+  console，零生命周期按钮；console 全挂载，后台默认流向浏览器（不看也在排水，
+  实测隐藏的 VM 切回时内部缓冲序号连续无丢帧）。
+
+两个组件互相零 import，只共享壳注入的资源事件流——积木式组合，不焊接；
+registry 加两行、manifest 两节点，壳零改动。
+
 ## 历史分支
 
 前几步各自演示的思想（完整改动面见各分支的 README 与 commit message）：
@@ -130,6 +145,12 @@ curl -s -X POST -H "$A" -d '{"delta":3}' localhost:8080/api/counter   # → {"va
 - **step-4-compose**：组合面板 vm——控制 + console 同屏，零后端触点。壳对组合
   一无所知（VmPanel 直接 import 已有面板组件）；独占是全局的（组合页的 console
   占住订阅位后，独立终端标签撞 409）。
+- **step-5-evidence**：执行层状态落盘 counter.json / console.log / vms.*，
+  cat / tail -f 独立验证每条演示主张。
+- **step-6-vm-resources**：VM 资源化——GET/POST /api/vms、异步 stop、
+  /ws/vms/{id}/console 每 VM 独占；每 VM 一个生产者，同一套不变量按实例生效。
+- **step-7-event-driven**：/ws/events 资源事件广播（wake/yield，全 ws 对齐
+  axvisor 真身选型）、左栏「能力 + 资源·实时」、vm 面板零轮询。
 
 ### step-3 验收
 
