@@ -41,6 +41,9 @@ impl Shell {
                 ),
             );
             dir.entries.insert("home".into(), Node::Dir(Dir::default()));
+            let mut var = Dir::default();
+            var.entries.insert("log".into(), Node::Dir(Dir::default()));
+            dir.entries.insert("var".into(), Node::Dir(var));
         }
         Self {
             cwd: Vec::new(),
@@ -68,7 +71,7 @@ impl Shell {
 
         match tokens[0] {
             "pwd" => self.path_string(),
-            "ls" => self.ls(),
+            "ls" => self.ls(tokens.get(1).copied()),
             "cd" => self.cd(tokens.get(1).copied().unwrap_or("/")),
             "mkdir" => match tokens.get(1) {
                 Some(name) => self.mkdir(name),
@@ -135,8 +138,12 @@ impl Shell {
         }
     }
 
-    fn ls(&self) -> String {
-        match self.node_at(&self.cwd) {
+    fn ls(&self, raw: Option<&str>) -> String {
+        let path = match raw {
+            Some(p) => self.resolve(p),
+            None => self.cwd.clone(),
+        };
+        match self.node_at(&path) {
             Some(Node::Dir(dir)) => dir
                 .entries
                 .iter()
@@ -186,6 +193,27 @@ impl Shell {
             Some(Node::File(content)) => content.clone(),
             Some(Node::Dir(_)) => format!("cat: {raw}: Is a directory"),
             None => format!("cat: {raw}: No such file or directory"),
+        }
+    }
+
+    /// 执行层事件投影：向虚拟文件系统的日志文件追加一行（活着的文件——
+    /// 内容由 VmManager 的真实生命周期事件驱动，cat 读到的是那一刻的历史）。
+    pub fn append_line(&mut self, path: &str, line: &str) {
+        let target = self.resolve(path);
+        let Some((name, parent)) = target.split_last() else {
+            return;
+        };
+        if let Some(dir) = self.dir_at_mut(parent) {
+            let entry = dir
+                .entries
+                .entry(name.clone())
+                .or_insert_with(|| Node::File(String::new()));
+            if let Node::File(content) = entry {
+                if !content.is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(line);
+            }
         }
     }
 
@@ -264,8 +292,11 @@ mod tests {
         assert_eq!(sh.execute("cat f.txt"), "hello world\nmore");
         assert_eq!(sh.execute("cd .."), "");
         assert_eq!(sh.execute("pwd"), "/");
-        assert_eq!(sh.execute("ls"), "README.txt  a/  home/");
+        assert_eq!(sh.execute("ls"), "README.txt  a/  home/  var/");
         assert!(sh.execute("cat nope").contains("No such file"));
+        sh.append_line("/var/log/vm.log", "CREATE");
+        sh.append_line("/var/log/vm.log", "STOPPED");
+        assert_eq!(sh.execute("cat /var/log/vm.log"), "CREATE\nSTOPPED");
         assert!(sh.execute("nonsense").contains("command not found"));
     }
 }

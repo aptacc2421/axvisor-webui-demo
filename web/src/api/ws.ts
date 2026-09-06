@@ -48,7 +48,7 @@ export class TermSocket {
   constructor(
     private readonly token: string,
     private readonly handlers: TermHandlers,
-    private readonly path = '/ws/term',
+    private readonly path: string,
   ) {
     void this.connect()
   }

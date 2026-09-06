@@ -95,6 +95,85 @@ VmManager：资源变更（create/stop 收尾）→ vm_snapshot() →
 - **数据不丢**：console 在面板挂载时即全部连接，不看也在排水——实测隐藏的
   console 切回时内部缓冲序号连续无丢帧。
 
+### 数据流向：一条 `cat /var/log/vm.log` 的旅程
+
+`/var/log/vm.log` 是一个「活着的文件」——内容由 VmManager 的真实生命周期
+事件驱动（CREATE / STOP / STOPPED 会追加进去），cat 读到的永远是那一刻的
+执行层历史。从敲键到像素，一共八跳：
+
+```text
+你在键盘上敲 cat /var/log/vm.log ⏎
+──────────────────────────── 浏览器侧 ────────────────────────────
+① xterm 捕获每个键 → 逐字符本地回显 + 行编辑缓冲累积（退格擦除）
+   实现：web/src/panels/console/TerminalPanel.tsx（term.onData 行编辑分支）
+② ⏎ Enter → 整行发送 → WebSocket Binary 帧 → /ws/vms/1/console
+   实现：TerminalPanel.tsx（'\r' 分支 → socket.send）
+       + web/src/api/ws.ts（TermSocket.send → wsUrl → WebSocket）
+                                                        （↑ 计数 +18B）
+──────────────────────────── 传输层 ──────────────────────────────
+③ axum 会话收到帧 → 解出命令行
+   实现：server/src/terminal.rs（session 的 Message::Text/Binary 分支）
+④ IN 落盘 server/data/console.log
+   实现：server/src/state.rs（Evidence::console）
+──────────────────────────── 执行层 ──────────────────────────────
+⑤ 执行命令 → VFS 树按 /var/log/vm.log 逐段下钻 → 取出 File 内容
+   实现：server/src/shell.rs（Shell::execute → Shell::cat → node_at）
+   （文件内容 = CREATE/STOP/STOPPED——由 VmManager 真实事件投影，
+     server/src/state.rs 各 VmCmd 分支 → Shell::append_line）
+⑥ 组装响应帧 = 输出 + "\r\n" + 提示符 → OUT 落盘 → 帧推回
+   实现：server/src/terminal.rs（session）+ state.rs（Evidence::console）
+                                                        （↓ 计数增长）
+──────────────────────────── 回到浏览器 ───────────────────────────
+⑦ 收到输出帧
+   实现：web/src/api/ws.ts（TermSocket.onmessage → onData 回调）
+⑧ xterm 渲染：文件内容 + 新提示符
+   实现：TerminalPanel.tsx（onData 回调里 term.write）
+```
+
+每一跳都可独立验证：②在浏览器 DevTools 的 Network→WS 帧里看得到原始帧；
+④⑦在 `server/data/console.log`（tail -f）里 IN/OUT 成对出现；⑧就是屏幕。
+命令输出不是前端 state——它是执行层 VFS 的真实投影，所以「cat 说了什么」
+不由浏览器决定。
+
+### 连接拓扑：一 VM 一连接，一页面多连接
+
+```text
+浏览器页面（full 分支）
+├─ /ws/events            ×1（壳级，广播所有资源变更，无独占）
+├─ /ws/vms/1/console     ×1（持有 VM #1 的座位）
+├─ /ws/vms/2/console     ×1（持有 VM #2 的座位）
+└─ /ws/vms/N/console     ×1 …（面板挂载时即全部连接，后台排水）
+
+第二个浏览器页面再来：
+├─ /ws/events            ×1（事件广播无独占，照常收到）
+└─ /ws/vms/1/console     ✗ 409（座位被第一个页面占着）
+```
+
+即：**VM : console 连接 = 1 : 1（任一时刻）**；一个页面与 VM 是
+「一对多」（页面里每台 VM 一条连接）。事件流是页面级的，与 VM 数无关。
+（若将来做「观察/键盘分离」，拓扑会变成多观察者共享一条只读流——见边界。）
+
+### 输入「过不过路由」？——过一次，然后直通
+
+ws 与 REST 在路由语义上有本质区别：
+
+```text
+REST（无状态短连接）：
+  每次 POST /api/vms 都重新过一遍 Router 路由匹配 → handler → 返回 → 连接结束
+
+ws（有状态长连接）：
+  路由只在【握手升级】那一刻参与一次——
+  GET /ws/vms/1/console?token=… → Router 匹配到 ws_vm_console
+    → token / 独占座位检查 → subscribe 领座位 → 101 升级
+  之后这条 TCP 连接变成直通隧道：每一帧输入
+    组件 socket.send() → 已建立的 ws → session() 循环 → shell 执行
+  不再经过 Router 的任何匹配。
+```
+
+所以「输入从组件直接发出」是对的——直通的前提是握手时路由已经把这条连接
+**绑死**到正确的 session 上。这也正是独占座位能挂在连接上的原因：ws 有状态，
+REST 没有。输出走同一条隧道反向回来，同理。
+
 ## 6. 大终端 + 拖拽融合
 
 - 终端组件全黑占满、顶部细条（标题/状态/丢帧/字节计数），零说明文字。

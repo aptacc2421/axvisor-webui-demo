@@ -234,12 +234,19 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                 VmCmd::Create(reply) => {
                     let id = next_id;
                     next_id += 1;
+                    let shell = Arc::new(Mutex::new(Shell::new()));
+                    // 生命周期事件投影进这台 VM 的「活文件」：cat /var/log/vm.log
+                    // 读到的就是执行层的真实历史
+                    shell
+                        .lock()
+                        .unwrap()
+                        .append_line("/var/log/vm.log", "CREATE");
                     let (seat_tx, _seat_rx) = mpsc::channel::<()>(1);
                     vms.insert(
                         id,
                         VmEntry {
                             state: VmState::Running,
-                            shell: Arc::new(Mutex::new(Shell::new())),
+                            shell: Arc::clone(&shell),
                             seat: Some(seat_tx),
                         },
                     );
@@ -252,6 +259,10 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                     let accepted = match vms.get_mut(&id) {
                         Some(e) if e.state == VmState::Running => {
                             e.state = VmState::Stopping;
+                            e.shell
+                                .lock()
+                                .unwrap()
+                                .append_line("/var/log/vm.log", "STOP");
                             // 异步语义：先回执，2s 后由延迟任务收尾
                             let mgr_tx = self_tx.clone();
                             tokio::spawn(async move {
@@ -273,6 +284,10 @@ fn spawn_vm_manager(evidence: Evidence) -> VmManager {
                     if let Some(e) = vms.get_mut(&id) {
                         if e.state == VmState::Stopping {
                             e.state = VmState::Stopped;
+                            e.shell
+                                .lock()
+                                .unwrap()
+                                .append_line("/var/log/vm.log", "STOPPED");
                             evidence.vm_event("STOPPED", id);
                             vm_snapshot(&vms, &evidence, &loop_tx);
                         }
